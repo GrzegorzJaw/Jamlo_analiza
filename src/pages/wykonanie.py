@@ -10,7 +10,9 @@ def render(readonly: bool):
         if readonly:
             st.dataframe(st.session_state["forecast_daily"], use_container_width=True)
         else:
-            st.session_state["forecast_daily"] = st.data_editor(st.session_state["forecast_daily"], use_container_width=True, key="fc_editor")
+            st.session_state["forecast_daily"] = st.data_editor(
+                st.session_state["forecast_daily"], use_container_width=True, key="fc_editor"
+            )
     with colB:
         st.subheader("Wykonanie dzienne")
         if readonly:

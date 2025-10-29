@@ -1,6 +1,6 @@
 import streamlit as st
-from ..components.kpi import kpi_tile
-from ..components.charts import bar
+from components.kpi import kpi_tile
+from components.charts import bar
 
 def render():
     st.title("DASHBOARD — Inwestor")
@@ -8,7 +8,6 @@ def render():
     c1,c2,c3,c4 = st.columns(4)
     kpi_tile(c1, "ADR (avg)", float(insights["ADR"].astype(float).mean()))
     kpi_tile(c2, "RevPAR (avg)", float(insights["RevPAR"].astype(float).mean()))
-    # proste proxy EBITDA%
     proxy = (insights["RevPAR"].astype(float).mean() - insights["var_cost_per_occ_room"].astype(float).mean())/max(insights["ADR"].astype(float).mean(),1)*100
     kpi_tile(c3, "EBITDA% (proxy)", float(proxy))
     kpi_tile(c4, "BE rooms (median)", float(insights["BE_rooms"].astype(float).median()))

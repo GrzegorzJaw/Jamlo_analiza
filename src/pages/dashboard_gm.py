@@ -1,6 +1,6 @@
 import streamlit as st
-from ..components.kpi import kpi_tile
-from ..components.charts import line
+from components.kpi import kpi_tile
+from components.charts import line
 
 def render():
     st.title("DASHBOARD — GM")

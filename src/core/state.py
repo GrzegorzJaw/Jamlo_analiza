@@ -1,7 +1,7 @@
 import pandas as pd
-from .data_io import default_frames, coerce_num
-from ..utils.dates import ensure_month
-from .metrics import enrich_insights
+from core.data_io import default_frames, coerce_num   # ABSOLUTE IMPORT
+from utils.dates import ensure_month                  # ABSOLUTE IMPORT
+from core.metrics import enrich_insights              # ABSOLUTE IMPORT
 
 def init_session(st, data_book):
     insights, raw, kpi = default_frames()
@@ -15,7 +15,8 @@ def init_session(st, data_book):
     insights = enrich_insights(insights)
 
     if "plan" not in st.session_state:
-        st.session_state["plan"] = insights[["ADR","occ","var_cost_per_occ_room","fixed_costs","unalloc","mgmt_fees"]]            .rename(columns={"ADR":"ADR_plan","occ":"Occ_plan"})
+        st.session_state["plan"] = insights[["ADR","occ","var_cost_per_occ_room","fixed_costs","unalloc","mgmt_fees"]] \
+            .rename(columns={"ADR":"ADR_plan","occ":"Occ_plan"})
     if "forecast_daily" not in st.session_state:
         today = pd.Timestamp.today().normalize()
         fut = pd.date_range(today, today + pd.Timedelta(days=29), freq="D")

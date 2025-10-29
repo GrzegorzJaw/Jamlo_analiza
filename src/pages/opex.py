@@ -1,4 +1,5 @@
 import streamlit as st
+
 def render(readonly: bool):
     st.title("OPEX — koszty niepodzielone (demo)")
     insights = st.session_state["insights"]

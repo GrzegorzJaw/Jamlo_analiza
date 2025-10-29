@@ -1,5 +1,5 @@
 import streamlit as st
-from ..core.data_io import coerce_num
+from core.data_io import coerce_num
 
 def render(readonly: bool):
     st.title("PLAN — roczny (GM)")

@@ -1,5 +1,8 @@
 def build_pages(role: str, project_tabs_df):
-    canonical = ["DASH_GM","DASH_INV","PLAN","WYKONANIE","ROOMS","FNB","OPEX","RAPORTY","COVENANTS","TASKS","SETTINGS"]
+    canonical = [
+        "DASH_GM","DASH_INV","PLAN","WYKONANIE","ROOMS","FNB",
+        "OPEX","RAPORTY","COVENANTS","TASKS","SETTINGS"
+    ]
     if project_tabs_df is None or project_tabs_df.empty:
         return ["DASH_GM","PLAN","WYKONANIE","RAPORTY"] if role=="GM" else ["DASH_INV","RAPORTY"]
     df = project_tabs_df.copy()

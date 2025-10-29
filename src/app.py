@@ -3,7 +3,6 @@ import pandas as pd
 from core.data_io import read_project_excel, read_data_workbook
 from core.navigation import build_pages
 from core.state import init_session
-from core.metrics import enrich_insights
 from pages import dashboard_gm, dashboard_inv, plan, wykonanie, rooms, fnb, opex, raporty, covenants, tasks, settings
 
 st.set_page_config(page_title="JAMLO Hotel Analytics", layout="wide")
