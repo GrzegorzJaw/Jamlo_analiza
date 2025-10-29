@@ -1,4 +1,8 @@
-def build_pages(role: str, project_tabs_df):
+def build_pages(role: str, project_tabs_df, project_config=None):
+    if project_config is not None:
+        return project_config.pages_for_role(role)
+
+    # Fallback (gdy brak configu)
     canonical = [
         "DASH_GM","DASH_INV","PLAN","WYKONANIE","ROOMS","FNB",
         "OPEX","RAPORTY","COVENANTS","TASKS","SETTINGS"

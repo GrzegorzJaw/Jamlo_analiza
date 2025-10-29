@@ -1,9 +1,11 @@
 import pandas as pd
-from core.data_io import default_frames, coerce_num   # ABSOLUTE IMPORT
-from utils.dates import ensure_month                  # ABSOLUTE IMPORT
-from core.metrics import enrich_insights              # ABSOLUTE IMPORT
+from core.data_io import default_frames
+from utils.dates import ensure_month
+from core.metrics import enrich_insights
+from core.config import ProjectConfig
+from core.var import monthly_var_vs_plan
 
-def init_session(st, data_book):
+def init_session(st, data_book, project_sheets=None):
     insights, raw, kpi = default_frames()
     if data_book.get("insights") is not None:
         insights = ensure_month(data_book["insights"])
@@ -24,6 +26,10 @@ def init_session(st, data_book):
     if "actual_daily" not in st.session_state:
         st.session_state["actual_daily"] = pd.DataFrame(columns=["date","sold_rooms","ADR","fnb_rev","other_rev"])
 
+    # Config z Excela projektu
+    st.session_state["project_config"] = ProjectConfig(project_sheets or {})
+
     st.session_state["insights"] = insights
     st.session_state["raw"] = raw
     st.session_state["kpi"] = kpi
+    st.session_state["var_mm"] = monthly_var_vs_plan(insights, st.session_state["actual_daily"])
