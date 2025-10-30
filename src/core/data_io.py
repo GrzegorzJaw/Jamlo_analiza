@@ -53,37 +53,39 @@ def coerce_num(s):
 
 def default_frames():
     """
-    Zwraca trzy ramki: insights (miesięczna baza), raw (dzienna baza), kpi (pusta tabela KPI).
-    To jest tylko „starter”, aby appka poprawnie wstała bez wgranych danych.
+    Starter bez danych: miesięczne 'insights', dzienne 'raw' (wszystkie kolumny tej samej długości),
+    oraz pusta tabela 'kpi'.
     """
-    # Oś czasu: bieżący rok, miesiące 1..12
-    year_start = pd.Timestamp.today().normalize().replace(month=1, day=1)
-    months = pd.period_range(start=year_start, periods=12, freq="M").to_timestamp()
+    # kalendarz roku bieżącego
+    today = pd.Timestamp.today().normalize()
+    year_start = pd.Timestamp(today.year, 1, 1)
+    year_end   = pd.Timestamp(today.year, 12, 31)
 
-    # INSIGHTS – to na bazie tego budujesz 'plan' w state.py
+    # INSIGHTS (miesięczne)
+    months = pd.period_range(start=year_start, end=year_end, freq="M").to_timestamp("M")
     insights = pd.DataFrame({
-        "month": months,                          # utils.dates.ensure_month zadziała
-        "ADR": 300.0,                             # średnia cena
-        "occ": 0.65,                              # obłożenie (0..1)
-        "var_cost_per_occ_room": 45.0,            # zmienny koszt na sprz. pokój
-        "fixed_costs": 120000.0/12,               # stałe koszty miesięczne
-        "unalloc": 0.0,                           # koszty niealokowane (opcjonalnie)
-        "mgmt_fees": 0.0,                         # opłaty zarządcze (opcjonalnie)
+        "month": months,
+        "ADR": 300.0,
+        "occ": 0.65,
+        "var_cost_per_occ_room": 45.0,
+        "fixed_costs": 120000.0/12,
+        "unalloc": 0.0,
+        "mgmt_fees": 0.0,
     })
 
-    # RAW – dzienne (puste kolumny, żeby nic się nie wywalało)
+    # RAW (dzienne) — puste wartości, ale długości jak 'date'
+    dates = pd.date_range(year_start, year_end, freq="D")
+    n = len(dates)
     raw = pd.DataFrame({
-        "date": pd.date_range(months[0], months[-1], freq="D"),
-        "sold_rooms": pd.Series(dtype="float"),
-        "ADR": pd.Series(dtype="float"),
-        "fnb_rev": pd.Series(dtype="float"),
-        "other_rev": pd.Series(dtype="float"),
+        "date": dates,
+        "sold_rooms": pd.Series([pd.NA] * n, dtype="Float64"),
+        "ADR":        pd.Series([pd.NA] * n, dtype="Float64"),
+        "fnb_rev":    pd.Series([pd.NA] * n, dtype="Float64"),
+        "other_rev":  pd.Series([pd.NA] * n, dtype="Float64"),
     })
 
-    # KPI – prosty szkielet, jeśli gdzieś podglądasz kpi.head()
-    kpi = pd.DataFrame({
-        "metric": [],
-        "value": []
-    })
+    # KPI – szkielet
+    kpi = pd.DataFrame({"metric": [], "value": []})
 
     return insights, raw, kpi
+
