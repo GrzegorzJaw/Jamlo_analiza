@@ -1,8 +1,10 @@
 import streamlit as st
 from components.kpi import kpi_tile
 from components.charts import line
+from typing import Any
 
-def render():
+
+def render(project_cfg: Any = None, readonly: bool = False, **_):
     st.title("DASHBOARD — GM")
     insights = st.session_state["insights"]
     c1,c2,c3,c4 = st.columns(4)
