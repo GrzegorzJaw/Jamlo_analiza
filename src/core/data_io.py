@@ -1,42 +1,46 @@
+import os
+from pathlib import Path
 import pandas as pd
-import numpy as np
-from typing import Dict, Any
-from utils.dates import ensure_month  # ABSOLUTE IMPORT
+from typing import Dict, Iterable
 
-def coerce_num(s):
-    return pd.to_numeric(s, errors="coerce")
+def _xls_to_dict(xls: pd.ExcelFile) -> Dict[str, pd.DataFrame]:
+    return {name: xls.parse(name) for name in xls.sheet_names}
 
-def read_project_excel(uploaded) -> Dict[str, pd.DataFrame]:
-    if uploaded is None:
-        return {}
-    try:
-        return pd.read_excel(uploaded, sheet_name=None)
-    except Exception:
-        return {}
+def read_project_excel(
+    uploaded_file=None,
+    fallback_path: str | None = None,
+    alt_paths: Iterable[str] | None = None,
+) -> Dict[str, pd.DataFrame]:
+    """
+    1) Jeśli użytkownik wgrał plik – czyta z uploadu.
+    2) W innym wypadku próbuje znaleźć plik projektu po ścieżkach fallback.
+    3) Gdy nic nie znaleziono – zwraca pusty dict.
+    """
+    # 1) z uploadu
+    if uploaded_file is not None:
+        xls = pd.ExcelFile(uploaded_file)
+        return _xls_to_dict(xls)
 
-def read_data_workbook(uploaded) -> Dict[str, Any]:
-    if uploaded is None:
-        return {}
-    try:
-        sheets = pd.read_excel(uploaded, sheet_name=None)
-    except Exception:
-        return {}
-    out = {}
-    out["insights"] = next((sheets[k] for k in ["insight","insights","INSIGHT","INSIGHTS"] if k in sheets), None)
-    out["raw"] = next((sheets[k] for k in ["raw_matrix","_raw_matrix","raw","RAW_MATRIX","RAW"] if k in sheets), None)
-    out["kpi"] = next((sheets[k] for k in ["kpi","KPI","Kpi"] if k in sheets), None)
-    out["cost"] = {name: df for name, df in sheets.items() if str(name).lower().startswith("cost")}
-    return out
+    # 2) fallbacki
+    candidates = []
+    if fallback_path:
+        candidates.append(fallback_path)
 
-def default_frames():
-    insights = pd.DataFrame({
-        "month": [f"{i:02d}" for i in range(1,13)],
-        "ADR": 300, "occ": 0.7, "var_cost_per_occ_room": 60,
-        "fixed_costs": 300_000/12, "unalloc": 120_000/12, "mgmt_fees": 0
-    })
-    raw = pd.DataFrame({
-        "month": [f"{i:02d}" for i in range(1,13)],
-        "sold_rooms": 120*30*0.7/12, "ADR": 300
-    })
-    kpi = pd.DataFrame({"name":["RevPAR","EBITDA%"], "value":[210, 24.0]})
-    return ensure_month(insights), ensure_month(raw), kpi
+    # domyślne ścieżki (repo + katalog danych na serwerze)
+    default_name = "Projekt_aplikacji_hotelowej_20251028_074602.xlsx"
+    here = Path(__file__).resolve().parents[1]  # katalog src/
+    candidates += [
+        str(here / default_name),
+        str(Path("/mnt/data") / default_name),
+    ]
+
+    if alt_paths:
+        candidates += list(alt_paths)
+
+    for p in candidates:
+        if p and os.path.exists(p):
+            xls = pd.ExcelFile(p)
+            return _xls_to_dict(xls)
+
+    # 3) brak pliku – pusto
+    return {}

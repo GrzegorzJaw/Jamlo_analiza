@@ -13,10 +13,15 @@ role = st.sidebar.radio("Rola", ["GM","INV"], index=0, horizontal=True)
 proj_upload = st.sidebar.file_uploader("Projekt aplikacji (Excel)", type=["xlsx"])
 
 # Projekt (zakładki/ACL) z uploadu albo fallbacku (ten, który dałeś)
+
 project_sheets = read_project_excel(
     proj_upload,
-    fallback_path="Projekt_aplikacji_hotelowej_20251028_074602.xlsx"
+    fallback_path="Projekt_aplikacji_hotelowej_20251028_074602.xlsx",
+    alt_paths=["/mnt/data/Projekt_aplikacji_hotelowej_20251028_074602.xlsx"],
 )
+if not project_sheets:
+    st.sidebar.warning("Nie znaleziono pliku projektu. Wgraj go w panelu lub upewnij się, że istnieje w /mnt/data/.")
+
 
 st.sidebar.subheader("Google Drive — Plan Finansowy Hotele")
 drive_file_id = st.secrets.get("DRIVE_FILE_ID_PLAN", "").strip()
