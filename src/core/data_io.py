@@ -44,3 +44,46 @@ def read_project_excel(
 
     # 3) brak pliku – pusto
     return {}
+
+# --- core/data_io.py (DOPISZ NA KOŃCU PLIKU) ---
+
+def coerce_num(s):
+    """Bezpieczne rzutowanie kolumn na liczby (używane m.in. w plan.py)."""
+    return pd.to_numeric(s, errors="coerce").fillna(0.0)
+
+def default_frames():
+    """
+    Zwraca trzy ramki: insights (miesięczna baza), raw (dzienna baza), kpi (pusta tabela KPI).
+    To jest tylko „starter”, aby appka poprawnie wstała bez wgranych danych.
+    """
+    # Oś czasu: bieżący rok, miesiące 1..12
+    year_start = pd.Timestamp.today().normalize().replace(month=1, day=1)
+    months = pd.period_range(start=year_start, periods=12, freq="M").to_timestamp()
+
+    # INSIGHTS – to na bazie tego budujesz 'plan' w state.py
+    insights = pd.DataFrame({
+        "month": months,                          # utils.dates.ensure_month zadziała
+        "ADR": 300.0,                             # średnia cena
+        "occ": 0.65,                              # obłożenie (0..1)
+        "var_cost_per_occ_room": 45.0,            # zmienny koszt na sprz. pokój
+        "fixed_costs": 120000.0/12,               # stałe koszty miesięczne
+        "unalloc": 0.0,                           # koszty niealokowane (opcjonalnie)
+        "mgmt_fees": 0.0,                         # opłaty zarządcze (opcjonalnie)
+    })
+
+    # RAW – dzienne (puste kolumny, żeby nic się nie wywalało)
+    raw = pd.DataFrame({
+        "date": pd.date_range(months[0], months[-1], freq="D"),
+        "sold_rooms": pd.Series(dtype="float"),
+        "ADR": pd.Series(dtype="float"),
+        "fnb_rev": pd.Series(dtype="float"),
+        "other_rev": pd.Series(dtype="float"),
+    })
+
+    # KPI – prosty szkielet, jeśli gdzieś podglądasz kpi.head()
+    kpi = pd.DataFrame({
+        "metric": [],
+        "value": []
+    })
+
+    return insights, raw, kpi
