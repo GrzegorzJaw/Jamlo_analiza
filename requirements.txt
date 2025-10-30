@@ -3,3 +3,8 @@ pandas
 numpy
 plotly
 openpyxl
+pydrive2
+google-auth
+google-auth-oauthlib
+google-api-python-client
+
