@@ -4,6 +4,7 @@ from core.navigation import build_pages
 from core.cloud_drive import download_excel_from_drive, upload_excel_to_drive
 from core.data_io import read_project_excel
 from core.i18n import PAGE_LABELS_PL, resolve_sheet_name
+import os
 
 st.set_page_config(page_title="Analiza hotelowa", layout="wide")
 
@@ -14,13 +15,29 @@ proj_upload = st.sidebar.file_uploader("Projekt aplikacji (Excel)", type=["xlsx"
 
 # Projekt (zakładki/ACL) z uploadu albo fallbacku (ten, który dałeś)
 
-project_sheets = read_project_excel(
-    proj_upload,
-    fallback_path="Projekt_aplikacji_hotelowej_20251028_074602.xlsx",
-    alt_paths=["/mnt/data/Projekt_aplikacji_hotelowej_20251028_074602.xlsx"],
-)
+def _xls_to_dict(path_or_file):
+    xls = pd.ExcelFile(path_or_file)
+    return {name: xls.parse(name) for name in xls.sheet_names}
+
+# 1) najpierw z uploadu
+project_sheets = {}
+if proj_upload is not None:
+    project_sheets = _xls_to_dict(proj_upload)
+
+# 2) fallbacki jeśli brak uploadu albo plik pusty
 if not project_sheets:
-    st.sidebar.warning("Nie znaleziono pliku projektu. Wgraj go w panelu lub upewnij się, że istnieje w /mnt/data/.")
+    candidates = [
+        "Projekt_aplikacji_hotelowej_20251028_074602.xlsx",
+        "/mnt/data/Projekt_aplikacji_hotelowej_20251028_074602.xlsx",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            project_sheets = _xls_to_dict(p)
+            break
+
+# 3) gdy nadal pusto – pokaż info
+if not project_sheets:
+    st.sidebar.warning("Nie znaleziono pliku projektu. Wgraj go w panelu lub umieść w /mnt/data/.")
 
 
 st.sidebar.subheader("Google Drive — Plan Finansowy Hotele")
