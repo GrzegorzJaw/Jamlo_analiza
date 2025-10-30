@@ -5,6 +5,7 @@ from core.cloud_drive import download_excel_from_drive, upload_excel_to_drive
 from core.data_io import read_project_excel
 from core.i18n import PAGE_LABELS_PL, resolve_sheet_name
 import os
+from pages import dashboard_gm, plan, wykonanie, opex, rooms, fnb, raporty, covenants, tasks, settings
 
 st.set_page_config(page_title="Analiza hotelowa", layout="wide")
 
@@ -14,6 +15,13 @@ role = st.sidebar.radio("Rola", ["GM","INV"], index=0, horizontal=True)
 proj_upload = st.sidebar.file_uploader("Projekt aplikacji (Excel)", type=["xlsx"])
 
 # Projekt (zakładki/ACL) z uploadu albo fallbacku (ten, który dałeś)
+
+def _safe_render(mod, **kwargs):
+    # Spróbuj z przekazanymi argumentami; jeśli strona ma starą sygnaturę, wywołaj bez nich.
+    try:
+        return mod.render(**kwargs)
+    except TypeError:
+        return mod.render()
 
 def _xls_to_dict(path_or_file):
     xls = pd.ExcelFile(path_or_file)
@@ -73,18 +81,29 @@ page = st.sidebar.radio("Nawigacja", pages_ids, format_func=_label)
 readonly = (role == "INV")
 
 # --- Router (nic nie zmieniaj poza polskimi nagłówkami w plikach stron) ---
-from pages import dashboard_gm, plan, wykonanie, opex, rooms, fnb, raporty, covenants, tasks, settings
-if page == "DASH_GM":       dashboard_gm.render(readonly=False)
-elif page == "PLAN":        plan.render(readonly=readonly)
-elif page == "WYKONANIE":   wykonanie.render(readonly=readonly)
-elif page == "ROOMS":       rooms.render()
-elif page == "FNB":         fnb.render()
-elif page == "OPEX":        opex.render(readonly=readonly)
-elif page == "RAPORTY":     raporty.render()
-elif page == "COVENANTS":   covenants.render()
-elif page == "TASKS":       tasks.render()
-elif page == "SETTINGS":    settings.render(role, pages_ids)
-else:                       st.info("Zakładka w przygotowaniu.")
+
+
+if page == "DASH_GM":
+    _safe_render(dashboard_gm, readonly=False)
+elif page == "PLAN":
+    _safe_render(plan, readonly=readonly)
+elif page == "WYKONANIE":
+    _safe_render(wykonanie, readonly=readonly)
+elif page == "ROOMS":
+    _safe_render(rooms)
+elif page == "FNB":
+    _safe_render(fnb)
+elif page == "OPEX":
+    _safe_render(opex, readonly=readonly)
+elif page == "RAPORTY":
+    _safe_render(raporty)
+elif page == "COVENANTS":
+    _safe_render(covenants)
+elif page == "TASKS":
+    _safe_render(tasks)
+elif page == "SETTINGS":
+    _safe_render(settings, role=role, pages_ids=pages_ids)
+
 
 # --- Zapisy do chmury (używamy rzeczywistych nazw arkuszy z sheets_map) ---
 def _frames_for_save():
