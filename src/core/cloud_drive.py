@@ -8,8 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
-from cloud_drive import upsert_sheet, read_sheet  # <— NOWE
-# (reszta importów Twojej logiki plan/kpi – bez zmian)
+from core.cloud_drive import upsert_sheet, read_sheet
 
 # --- kolumny dzienne (jak ustaliliśmy wcześniej) ---
 ROOMS_DAY_COLS = ["pokoje_do_sprzedania","pokoje_oos","sprzedane_pokoje_bez","sprzedane_pokoje_ze","przychody_pokoje_netto"]
