@@ -10,12 +10,13 @@ from core.state import init_session
 from core.navigation import build_pages
 from core.i18n import PAGE_LABELS_PL, resolve_sheet_name
 
-# Chmura (Drive)
-from core.cloud_drive import (
-    resolve_drive_id,
-    download_excel_from_drive,
-    upload_excel_to_drive,
-)
+# Tryb lokalny – bez Drive
+USE_DRIVE = False  # docelowo ustawimy to na True, gdy wdrożymy eksport do GDrive
+
+# Stuby, żeby reszta kodu się nie sypała, jeśli gdzieś jest wywołanie:
+def resolve_drive_id(value: str) -> str: return ""
+def download_excel_from_drive(file_id_or_url: str) -> dict: return {}
+def upload_excel_to_drive(file_id_or_url: str, frames: dict) -> None: return None
 
 # Strony
 from pages import (
