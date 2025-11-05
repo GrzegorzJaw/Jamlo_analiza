@@ -187,3 +187,6 @@ def render() -> None:
 
     styled = matrix.style.format(formatter=fmt_map).set_properties(**{"text-align": "right"})
     st.dataframe(styled, use_container_width=True)
+
+# NA SAMYM DOLE:
+render()
