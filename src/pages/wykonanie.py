@@ -21,7 +21,7 @@ from core.state_local import (
     kpi_fnb_ytd,
 )
 
-# ───── Nowe nazwy kolumn (spójne prefiksy) ─────
+# ===== Nazwy kolumn: stare->nowe (konwencja prefiksów) =====
 COLMAP_OLD2NEW: Dict[str, str] = {
     # POKOJE
     "pokoje_do_sprzedania": "pokoje_dostepne_qty",
@@ -87,8 +87,8 @@ COLMAP_OLD2NEW: Dict[str, str] = {
 }
 NEW2OLD: Dict[str, str] = {new: old for old, new in COLMAP_OLD2NEW.items()}
 
+# ===== Etykiety UI =====
 DISPLAY_LABELS: Dict[str, str] = {
-    # (etykiety – jak ustaliliśmy wcześniej; skrócone tu dla czytelności)
     "pokoje_dostepne_qty": "🛏️ Pokoje do sprzedaży",
     "pokoje_oos_qty": "🚫 Pokoje OOS",
     "pokoje_sprzedane_bez_qty": "🛏️ Sprzedane BEZ śn.",
@@ -109,7 +109,7 @@ DISPLAY_LABELS: Dict[str, str] = {
     "inne_transport_przychod_pln": "🚖 Transport (goście)",
     "inne_rekreacja_przychod_pln": "🏊 Rekreacja",
     "inne_pozostale_przychod_pln": "➕ Pozostałe przychody",
-    # … (reszta kosztów jak poprzednio)
+    # (etykiety kosztów pominięte tu dla zwięzłości – pozostają jak wcześniej)
 }
 
 MONTHS_PL = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"]
@@ -118,7 +118,7 @@ REQUIRED_COLS_DEFAULT = [
     "pokoje_sprzedane_ze_qty","pokoje_przychod_netto_pln",
 ]
 
-# ───── Migracja nazw w sesji (stare → nowe) ─────
+# ===== Migracja (stare -> nowe) – jednorazowo w sesji =====
 def migrate_exec_session() -> None:
     exec_state = st.session_state.get("exec")
     if not isinstance(exec_state, dict):
@@ -141,26 +141,7 @@ def migrate_exec_session() -> None:
     if changed:
         st.toast(f"Zastosowano migrację nazw kolumn w {changed} arkuszach.", icon="✅")
 
-# ───── Adapter do KPI (nowe → stare) ─────
-def _to_old_cols_df(df: pd.DataFrame) -> pd.DataFrame:
-    # tylko jeśli starej kolumny brakuje
-    ren = {new: old for new, old in NEW2OLD.items() if new in df.columns and old not in df.columns}
-    return df.rename(columns=ren)
-
-def _to_old_cols_exec(exec_state: Dict) -> Dict:
-    out: Dict = {}
-    if not isinstance(exec_state, dict):
-        return out
-    for y, months in exec_state.items():
-        out[y] = {}
-        if not isinstance(months, dict):
-            continue
-        for m, df in months.items():
-            if isinstance(df, pd.DataFrame):
-                out[y][m] = _to_old_cols_df(df)
-    return out
-
-# ───── helpers: grupy/filtry/styl ─────
+# ===== helpers: grupy/filtry/styl =====
 def _to_numeric_series(s: pd.Series) -> pd.Series:
     if s.dtype == object:
         s = s.astype(str).str.strip().replace({"": None, "None": None, "nan": None})
@@ -240,7 +221,7 @@ def _column_config_for(df: pd.DataFrame) -> Dict[str, st.column_config.BaseColum
             cfg[c] = st.column_config.NumberColumn(label, step=1.0, format="%.2f")
     return cfg
 
-# ───── GŁÓWNY RENDER ─────
+# ===== GŁÓWNY RENDER =====
 def render(readonly: bool = False) -> None:
     role = st.session_state.get("role", "GM")
     year = int(st.session_state.get("year", 2025))
@@ -274,7 +255,8 @@ def render(readonly: bool = False) -> None:
 
     fc1, fc2, fc3 = st.columns([2, 3, 2])
     with fc1:
-        only_missing = st.checkbox("Pokaż tylko wiersze nieuzupełnione", value=False, key=f"only_missing_{year}_{month}")
+        only_missing = st.checkbox("Pokaż tylko wiersze nieuzupełnione",
+                                   value=False, key=f"only_missing_{year}_{month}")
     with fc2:
         group = st.selectbox("Grupa kolumn", list(groups.keys()),
                              index=(list(groups.keys()).index("Pokoje") if "Pokoje" in groups else 0),
@@ -283,27 +265,45 @@ def render(readonly: bool = False) -> None:
         cnt_placeholder = st.empty()
 
     group_cols = [c for c in groups.get(group, []) if c in df_edit.columns]
-    subset_cols_for_style = group_cols or [c for c in REQUIRED_COLS_DEFAULT if c in df_edit.columns]
+    default_subset = [c for c in REQUIRED_COLS_DEFAULT if c in df_edit.columns]
+    subset_cols_for_style = group_cols or default_subset
 
-    view_df = _filter_missing_rows(df_edit, group_cols or subset_cols_for_style) if only_missing else df_edit
+    # --- filtr wierszy (tylko braki) względem grupy
+    base_view = _filter_missing_rows(df_edit, subset_cols_for_style) if only_missing else df_edit
+
+    # --- WYBÓR KOLUMN DO WYŚWIETLENIA (NAPRAWA FILTRA)
+    if group == "Wszystkie" or not group_cols:
+        display_cols = ["data"] + [c for c in base_view.columns if c != "data"]
+    else:
+        display_cols = ["data"] + group_cols
+
+    view_df = base_view[display_cols].copy()
     cnt_placeholder.caption(f"Pokazujesz {len(view_df)} z {len(df_edit)} dni")
 
+    # ===== Dni do dziś
     st.markdown("#### Dni do dziś")
     if is_inv:
         st.info("Tryb podglądu – edycja wyłączona (INV).")
-        st.dataframe(_style_missing(view_df, subset_cols=subset_cols_for_style), width="stretch", hide_index=True)
+        st.dataframe(_style_missing(view_df, subset_cols=subset_cols_for_style),
+                     width="stretch", hide_index=True)
         all_now = pd.concat([df_edit, df_future], ignore_index=True)
     else:
         cfg = _column_config_for(view_df)
         editor_key = f"editor_{year}_{month}_{_group_key(group)}_{int(only_missing)}"
-        edited_view = st.data_editor(view_df, column_config=cfg, num_rows="fixed", width="stretch",
-                                     hide_index=True, key=editor_key)
+        edited_view = st.data_editor(
+            view_df,
+            column_config=cfg,
+            num_rows="fixed",
+            width="stretch",
+            hide_index=True,
+            key=editor_key,
+        )
 
         left, right = st.columns([1, 3])
         with left:
             who = st.text_input("Kto zapisuje?", value="GM")
             if st.button("Zapisz w sesji", type="primary", key=f"save_{year}_{month}"):
-                merged_edit = _merge_back(df_edit, edited_view)
+                merged_edit = _merge_back(df_edit, edited_view)  # merge tylko widocznych kolumn
                 new_full = pd.concat([merged_edit, df_future], ignore_index=True)
                 changes = save_month_df(year, month, new_full, user=who)
                 st.success(f"Zapisano {len(changes)} zmian.") if not changes.empty else st.info("Brak zmian.")
@@ -311,50 +311,39 @@ def render(readonly: bool = False) -> None:
 
         with right:
             st.markdown("**Podgląd braków (na czerwono)**")
-            st.dataframe(_style_missing(edited_view, subset_cols=subset_cols_for_style),
-                         width="stretch", hide_index=True)
+            st.dataframe(
+                _style_missing(edited_view, subset_cols=subset_cols_for_style),
+                width="stretch", hide_index=True,
+            )
 
             changes = st.session_state.get(f"last_changes_{year}_{month}")
             if changes is not None and not changes.empty:
                 st.subheader("Zmiany (ostatni zapis)")
                 st.dataframe(changes, width="stretch", hide_index=True)
 
-                st.subheader("Podgląd po zapisie (zmienione na żółto)")
-                before = df_full.set_index("data").sort_index()
-                after_all = _merge_back(df_edit, edited_view).set_index("data").sort_index()
-                before, after_all = before.align(after_all, join="outer", axis=0)
-                cols = [c for c in after_all.columns if c in before.columns and c != "data"]
-                mask = after_all[cols] != before[cols]
-                styled = after_all.style.apply(
-                    lambda _: mask.replace({True: "background-color: #fff3cd", False: ""}),
-                    axis=None, subset=cols,
-                )
-                st.dataframe(styled, width="stretch", hide_index=True)
-
         all_now = pd.concat([_merge_back(df_edit, edited_view), df_future], ignore_index=True)
 
-    # Dni przyszłe
+    # ===== Dni przyszłe
     if not df_future.empty:
         st.markdown("#### Dni przyszłe (podgląd)")
-        st.dataframe(df_future, width="stretch", hide_index=True)
+        # też ograniczamy kolumny zgodnie z grupą
+        fut_view = df_future[display_cols] if set(display_cols).issubset(df_future.columns.union({"data"})) else df_future
+        st.dataframe(fut_view, width="stretch", hide_index=True)
 
-    # Audit
+    # ===== Audit
     st.subheader("Historia zmian (audit log)")
     audit = get_audit(year, month)
     st.write("Brak zmian w tym miesiącu.") if audit.empty else st.dataframe(
         audit.sort_values("czas", ascending=False), width="stretch", hide_index=True
     )
 
-    # ───── KPI (z adapterem do starych nazw) ─────
-    all_now_kpi = _to_old_cols_df(all_now)
-    exec_state = st.session_state.get("exec", {})
-    exec_kpi = _to_old_cols_exec(exec_state)
-
+    # ===== KPI (core/state_local umie stare i nowe)
     st.subheader("Podsumowania KPI")
-    r_m = kpi_rooms_month(all_now_kpi)
-    f_m = kpi_fnb_month(all_now_kpi)
-    r_y = kpi_rooms_ytd(exec_kpi, year, month)
-    f_y = kpi_fnb_ytd(exec_kpi, year, month)
+    r_m = kpi_rooms_month(all_now)
+    f_m = kpi_fnb_month(all_now)
+    exec_state = st.session_state.get("exec", {})
+    r_y = kpi_rooms_ytd(exec_state, year, month)
+    f_y = kpi_fnb_ytd(exec_state, year, month)
 
     k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("Zdolność eksploatacyjna", f"{r_m['zdolnosc']:.0f}", delta=f"YTD {r_y['zdolnosc']:.0f}")
@@ -369,7 +358,7 @@ def render(readonly: bool = False) -> None:
     g2.metric("Koszty F&B", f"{f_m['g_k_razem']:.2f} zł", delta=f"YTD {f_y['g_k_razem']:.2f} zł")
     g3.metric("Wynik F&B", f"{f_m['g_wynik']:.2f} zł", delta=f"YTD {f_y['g_wynik']:.2f} zł")
 
-    # Eksport
+    # ===== Eksport
     st.subheader("Eksport do Excela")
     if st.button("Eksportuj wszystkie lata/miesiące do XLSX", type="secondary", key="export_all_xlsx"):
         try:
@@ -392,7 +381,7 @@ def render(readonly: bool = False) -> None:
         except Exception as e:
             st.error(f"Nie udało się wyeksportować: {e}")
 
-
+# ===== Eksport helper =====
 def _export_all_to_excel_bytes() -> io.BytesIO:
     exec_state = st.session_state.get("exec", {})
     if not exec_state:
