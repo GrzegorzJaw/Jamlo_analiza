@@ -1,4 +1,4 @@
-# pages/wykonanie.py
+# src/pages/wykonanie.py
 from __future__ import annotations
 
 import io
@@ -11,6 +11,7 @@ import streamlit as st
 
 from core.state_local import (
     init_exec_year,
+    migrate_to_new_schema,
     get_month_df,
     save_month_df,
     get_audit,
@@ -21,79 +22,15 @@ from core.state_local import (
     kpi_fnb_ytd,
 )
 
-# ===== Nazwy kolumn: stare->nowe (konwencja prefiksów) =====
-COLMAP_OLD2NEW: Dict[str, str] = {
-    # POKOJE
-    "pokoje_do_sprzedania": "pokoje_dostepne_qty",
-    "pokoje_oos": "pokoje_oos_qty",
-    "sprzedane_pokoje_bez": "pokoje_sprzedane_bez_qty",
-    "sprzedane_pokoje_ze": "pokoje_sprzedane_ze_qty",
-    "przychody_pokoje_netto": "pokoje_przychod_netto_pln",
-    # F&B
-    "fnb_sniadania_pakietowe": "fnb_sniadania_pakietowe_pln",
-    "fnb_kolacje_pakietowe": "fnb_kolacje_pakietowe_pln",
-    "fnb_zywnosc_a_la_carte": "fnb_zywnosc_a_la_carte_pln",
-    "fnb_napoje_a_la_carte": "fnb_napoje_a_la_carte_pln",
-    "fnb_zywnosc_bankiety": "fnb_zywnosc_bankiety_pln",
-    "fnb_napoje_bankiety": "fnb_napoje_bankiety_pln",
-    "fnb_wynajem_sali": "sprzedaz_wynajem_sali_pln",
-    "fnb_catering": "fnb_catering_pln",
-    # INNE CENTRA
-    "proc_pokoi_parking": "inne_proc_pokoi_parking_pct",
-    "przychody_parking": "inne_parking_przychod_pln",
-    "przychody_sklep_recepcyjny": "inne_sklep_recepcja_przychod_pln",
-    "przychody_pralnia_gosci": "inne_pralnia_gosci_przychod_pln",
-    "przychody_transport_gosci": "inne_transport_przychod_pln",
-    "przychody_rekreacja": "inne_rekreacja_przychod_pln",
-    "przychody_pozostale": "inne_pozostale_przychod_pln",
-    # KOSZTY — Pokoje
-    "r_osobowe_wynagrodzenia": "koszt_r_osobowe_wynagrodzenia_pln",
-    "r_osobowe_zus": "koszt_r_osobowe_zus_pln",
-    "r_osobowe_pfron": "koszt_r_osobowe_pfron_pln",
-    "r_osobowe_wyzywienie": "koszt_r_osobowe_wyzywienie_pln",
-    "r_osobowe_odziez_bhp": "koszt_r_osobowe_odziez_bhp_pln",
-    "r_osobowe_medyczne": "koszt_r_osobowe_medyczne_pln",
-    "r_osobowe_inne": "koszt_r_osobowe_inne_pln",
-    "r_materialy_eksploatacyjne_spozywcze": "koszt_r_materialy_eksplo_spozywcze_pln",
-    "r_materialy_kosmetyki_srodki": "koszt_r_materialy_kosmetyki_czystosc_pln",
-    "r_materialy_inne_biurowe": "koszt_r_materialy_inne_biurowe_pln",
-    "r_uslugi_sprzatania": "koszt_r_uslugi_sprzatanie_pln",
-    "r_uslugi_pranie_zew": "koszt_r_uslugi_pranie_zew_pln",
-    "r_uslugi_pranie_odziezy_sluzbowej": "koszt_r_uslugi_pranie_odziezy_pln",
-    "r_uslugi_wynajem_sprzetu": "koszt_r_uslugi_wynajem_sprzetu_pln",
-    "r_uslugi_inne_bhp": "koszt_r_uslugi_inne_pln",
-    "r_pozostale_prowizje_ota_gds": "koszt_r_prowizje_ota_gds_pln",
-    # KOSZTY — F&B
-    "g_koszt_surowca_zywnosc_pln": "koszt_g_surowiec_zywnosc_pln",
-    "g_koszt_surowca_napoje_pln": "koszt_g_surowiec_napoje_pln",
-    "g_osobowe_wynagrodzenia": "koszt_g_osobowe_wynagrodzenia_pln",
-    "g_osobowe_zus": "koszt_g_osobowe_zus_pln",
-    "g_osobowe_pfron": "koszt_g_osobowe_pfron_pln",
-    "g_osobowe_wyzywienie": "koszt_g_osobowe_wyzywienie_pln",
-    "g_osobowe_odziez_bhp": "koszt_g_osobowe_odziez_bhp_pln",
-    "g_osobowe_medyczne": "koszt_g_osobowe_medyczne_pln",
-    "g_osobowe_inne": "koszt_g_osobowe_inne_pln",
-    "g_materialy_zastawa": "koszt_g_materialy_zastawa_pln",
-    "g_materialy_drobne_wyposazenie": "koszt_g_materialy_drobne_wypos_pln",
-    "g_materialy_bielizna_dekoracje": "koszt_g_materialy_bielizna_dekor_pln",
-    "g_materialy_karty_dan": "koszt_g_materialy_karty_dan_pln",
-    "g_materialy_srodki_czystosci": "koszt_g_materialy_srodki_czystosci_pln",
-    "g_materialy_inne": "koszt_g_materialy_inne_pln",
-    "g_uslugi_sprzatania_tapicerki": "koszt_g_uslugi_sprzatanie_pln",
-    "g_uslugi_pranie_odziezy_sluzbowej": "koszt_g_uslugi_pranie_odziezy_pln",
-    "g_uslugi_pranie_bielizny_gastro": "koszt_g_uslugi_pranie_bielizny_pln",
-    "g_uslugi_wynajem_sprzetu_lokali": "koszt_g_uslugi_wynajem_sprzetu_pln",
-    "g_uslugi_inne": "koszt_g_uslugi_inne_pln",
-}
-NEW2OLD: Dict[str, str] = {new: old for old, new in COLMAP_OLD2NEW.items()}
-
-# ===== Etykiety UI =====
+# ===== Nowe, docelowe nazwy (etykiety do UI) =====
 DISPLAY_LABELS: Dict[str, str] = {
+    # Pokoje
     "pokoje_dostepne_qty": "🛏️ Pokoje do sprzedaży",
     "pokoje_oos_qty": "🚫 Pokoje OOS",
     "pokoje_sprzedane_bez_qty": "🛏️ Sprzedane BEZ śn.",
     "pokoje_sprzedane_ze_qty": "🥐 Sprzedane ZE śn.",
     "pokoje_przychod_netto_pln": "💰 Przychody pokoje (netto)",
+    # Gastronomia
     "fnb_sniadania_pakietowe_pln": "🥐 Śniadania pakietowe",
     "fnb_kolacje_pakietowe_pln": "🍽️ Kolacje pakietowe",
     "fnb_zywnosc_a_la_carte_pln": "🍲 Żywność a la carte",
@@ -101,7 +38,9 @@ DISPLAY_LABELS: Dict[str, str] = {
     "fnb_zywnosc_bankiety_pln": "🎉 Żywność bankiety",
     "fnb_napoje_bankiety_pln": "🥂 Napoje bankiety",
     "fnb_catering_pln": "🧺 Catering",
+    # Dział sprzedaży
     "sprzedaz_wynajem_sali_pln": "🏢 Wynajem sal",
+    # Inne centra
     "inne_proc_pokoi_parking_pct": "🅿️ % pokoi z parkingiem",
     "inne_parking_przychod_pln": "🅿️ Przychody parking",
     "inne_sklep_recepcja_przychod_pln": "🛒 Sklep recepcyjny",
@@ -109,37 +48,53 @@ DISPLAY_LABELS: Dict[str, str] = {
     "inne_transport_przychod_pln": "🚖 Transport (goście)",
     "inne_rekreacja_przychod_pln": "🏊 Rekreacja",
     "inne_pozostale_przychod_pln": "➕ Pozostałe przychody",
-    # (etykiety kosztów pominięte tu dla zwięzłości – pozostają jak wcześniej)
+    # Koszty – pokoje
+    "koszt_r_osobowe_wynagrodzenia_pln": "👥 Pokoje: wynagrodzenia",
+    "koszt_r_osobowe_zus_pln": "👥 Pokoje: ZUS",
+    "koszt_r_osobowe_pfron_pln": "👥 Pokoje: PFRON",
+    "koszt_r_osobowe_wyzywienie_pln": "👥 Pokoje: wyżywienie",
+    "koszt_r_osobowe_odziez_bhp_pln": "👥 Pokoje: odzież/BHP",
+    "koszt_r_osobowe_medyczne_pln": "👥 Pokoje: medyczne",
+    "koszt_r_osobowe_inne_pln": "👥 Pokoje: inne osobowe",
+    "koszt_r_materialy_eksplo_spozywcze_pln": "📦 Pokoje: materiały eksploat./spoż.",
+    "koszt_r_materialy_kosmetyki_czystosc_pln": "📦 Pokoje: kosmetyki/środki czystości",
+    "koszt_r_materialy_inne_biurowe_pln": "📦 Pokoje: inne/biurowe",
+    "koszt_r_uslugi_sprzatanie_pln": "🛠️ Pokoje: sprzątanie",
+    "koszt_r_uslugi_pranie_zew_pln": "🛠️ Pokoje: pranie (zew.)",
+    "koszt_r_uslugi_pranie_odziezy_pln": "🛠️ Pokoje: pranie odzieży sł.",
+    "koszt_r_uslugi_wynajem_sprzetu_pln": "🛠️ Pokoje: wynajem sprzętu",
+    "koszt_r_uslugi_inne_pln": "🛠️ Pokoje: inne usługi",
+    "koszt_r_prowizje_ota_gds_pln": "💳 Pokoje: prowizje OTA/GDS",
+    # Koszty – gastronomia
+    "koszt_g_surowiec_zywnosc_pln": "🍴 F&B: surowiec – żywność",
+    "koszt_g_surowiec_napoje_pln": "🍷 F&B: surowiec – napoje",
+    "koszt_g_osobowe_wynagrodzenia_pln": "👥 F&B: wynagrodzenia",
+    "koszt_g_osobowe_zus_pln": "👥 F&B: ZUS",
+    "koszt_g_osobowe_pfron_pln": "👥 F&B: PFRON",
+    "koszt_g_osobowe_wyzywienie_pln": "👥 F&B: wyżywienie",
+    "koszt_g_osobowe_odziez_bhp_pln": "👥 F&B: odzież/BHP",
+    "koszt_g_osobowe_medyczne_pln": "👥 F&B: medyczne",
+    "koszt_g_osobowe_inne_pln": "👥 F&B: inne osobowe",
+    "koszt_g_materialy_zastawa_pln": "📦 F&B: zastawa",
+    "koszt_g_materialy_drobne_wypos_pln": "📦 F&B: drobne wyposażenie",
+    "koszt_g_materialy_bielizna_dekor_pln": "📦 F&B: bielizna/dekoracje",
+    "koszt_g_materialy_karty_dan_pln": "📦 F&B: karty dań",
+    "koszt_g_materialy_srodki_czystosci_pln": "📦 F&B: środki czystości",
+    "koszt_g_materialy_inne_pln": "📦 F&B: inne materiały",
+    "koszt_g_uslugi_sprzatanie_pln": "🛠️ F&B: sprzątanie",
+    "koszt_g_uslugi_pranie_odziezy_pln": "🛠️ F&B: pranie odzieży sł.",
+    "koszt_g_uslugi_pranie_bielizny_pln": "🛠️ F&B: pranie bielizny",
+    "koszt_g_uslugi_wynajem_sprzetu_pln": "🛠️ F&B: wynajem sprzętu",
+    "koszt_g_uslugi_inne_pln": "🛠️ F&B: inne usługi",
 }
 
-MONTHS_PL = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"]
+MONTHS_PL = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"]
 REQUIRED_COLS_DEFAULT = [
-    "pokoje_dostepne_qty","pokoje_sprzedane_bez_qty",
-    "pokoje_sprzedane_ze_qty","pokoje_przychod_netto_pln",
+    "pokoje_dostepne_qty",
+    "pokoje_sprzedane_bez_qty",
+    "pokoje_sprzedane_ze_qty",
+    "pokoje_przychod_netto_pln",
 ]
-
-# ===== Migracja (stare -> nowe) – jednorazowo w sesji =====
-def migrate_exec_session() -> None:
-    exec_state = st.session_state.get("exec")
-    if not isinstance(exec_state, dict):
-        return
-    marker_key = "_migrated_cols_v1"
-    if st.session_state.get(marker_key):
-        return
-    changed = 0
-    for y, months in list(exec_state.items()):
-        if not isinstance(months, dict):
-            continue
-        for m, df in list(months.items()):
-            if not isinstance(df, pd.DataFrame):
-                continue
-            ren_map = {old: new for old, new in COLMAP_OLD2NEW.items() if old in df.columns}
-            if ren_map:
-                exec_state[y][m] = df.rename(columns=ren_map)
-                changed += 1
-    st.session_state[marker_key] = True
-    if changed:
-        st.toast(f"Zastosowano migrację nazw kolumn w {changed} arkuszach.", icon="✅")
 
 # ===== helpers: grupy/filtry/styl =====
 def _to_numeric_series(s: pd.Series) -> pd.Series:
@@ -221,6 +176,19 @@ def _column_config_for(df: pd.DataFrame) -> Dict[str, st.column_config.BaseColum
             cfg[c] = st.column_config.NumberColumn(label, step=1.0, format="%.2f")
     return cfg
 
+def _export_all_to_excel_bytes() -> io.BytesIO:
+    exec_state = st.session_state.get("exec", {})
+    if not exec_state:
+        raise RuntimeError("Brak danych w sesji do eksportu.")
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as wr:
+        for y, months in exec_state.items():
+            for m, df in months.items():
+                sheet = f"WYKONANIE_{int(y)}_{int(m):02d}"[:31]
+                df.to_excel(wr, index=False, sheet_name=sheet)
+    buf.seek(0)
+    return buf
+
 # ===== GŁÓWNY RENDER =====
 def render(readonly: bool = False) -> None:
     role = st.session_state.get("role", "GM")
@@ -228,8 +196,9 @@ def render(readonly: bool = False) -> None:
     month = int(st.session_state.get("month", 1))
     is_inv = readonly or (role == "INV")
 
+    # spójność schematu + gotowe miesiące
     init_exec_year(year)
-    migrate_exec_session()
+    migrate_to_new_schema()
 
     c1, c2, c3 = st.columns([7, 1, 1])
     with c1:
@@ -268,10 +237,10 @@ def render(readonly: bool = False) -> None:
     default_subset = [c for c in REQUIRED_COLS_DEFAULT if c in df_edit.columns]
     subset_cols_for_style = group_cols or default_subset
 
-    # --- filtr wierszy (tylko braki) względem grupy
+    # filtr wierszy (tylko braki) względem grupy
     base_view = _filter_missing_rows(df_edit, subset_cols_for_style) if only_missing else df_edit
 
-    # --- WYBÓR KOLUMN DO WYŚWIETLENIA (NAPRAWA FILTRA)
+    # kolumny do wyświetlenia
     if group == "Wszystkie" or not group_cols:
         display_cols = ["data"] + [c for c in base_view.columns if c != "data"]
     else:
@@ -280,14 +249,21 @@ def render(readonly: bool = False) -> None:
     view_df = base_view[display_cols].copy()
     cnt_placeholder.caption(f"Pokazujesz {len(view_df)} z {len(df_edit)} dni")
 
-    # ===== Dni do dziś
+    # === Tryb główny bez dolnej tabeli: przełącznik podświetlenia ===
+    podglad_kolor = st.checkbox("🔦 Podgląd braków (kolor)", value=False, key=f"color_preview_{year}_{month}")
+
     st.markdown("#### Dni do dziś")
-    if is_inv:
-        st.info("Tryb podglądu – edycja wyłączona (INV).")
-        st.dataframe(_style_missing(view_df, subset_cols=subset_cols_for_style),
-                     width="stretch", hide_index=True)
+    if is_inv or podglad_kolor:
+        # readonly lub podgląd kolorów → stylowanie na czerwono w głównej tabeli
+        st.dataframe(
+            _style_missing(view_df, subset_cols=subset_cols_for_style),
+            width="stretch",
+            hide_index=True,
+        )
+        # po podglądzie nadal licz KPI na wszystkich danych
         all_now = pd.concat([df_edit, df_future], ignore_index=True)
     else:
+        # tryb edycji – tylko JEDNA tabela (data_editor), bez dolnego podglądu
         cfg = _column_config_for(view_df)
         editor_key = f"editor_{year}_{month}_{_group_key(group)}_{int(only_missing)}"
         edited_view = st.data_editor(
@@ -303,41 +279,35 @@ def render(readonly: bool = False) -> None:
         with left:
             who = st.text_input("Kto zapisuje?", value="GM")
             if st.button("Zapisz w sesji", type="primary", key=f"save_{year}_{month}"):
-                merged_edit = _merge_back(df_edit, edited_view)  # merge tylko widocznych kolumn
+                merged_edit = _merge_back(df_edit, edited_view)
                 new_full = pd.concat([merged_edit, df_future], ignore_index=True)
                 changes = save_month_df(year, month, new_full, user=who)
                 st.success(f"Zapisano {len(changes)} zmian.") if not changes.empty else st.info("Brak zmian.")
                 st.session_state[f"last_changes_{year}_{month}"] = changes
 
-        with right:
-            st.markdown("**Podgląd braków (na czerwono)**")
-            st.dataframe(
-                _style_missing(edited_view, subset_cols=subset_cols_for_style),
-                width="stretch", hide_index=True,
-            )
-
-            changes = st.session_state.get(f"last_changes_{year}_{month}")
-            if changes is not None and not changes.empty:
-                st.subheader("Zmiany (ostatni zapis)")
-                st.dataframe(changes, width="stretch", hide_index=True)
+        # bez dolnej tabeli; można ewentualnie pokazać ostatnie zmiany
+        changes = st.session_state.get(f"last_changes_{year}_{month}")
+        if changes is not None and not changes.empty:
+            st.subheader("Zmiany (ostatni zapis)")
+            st.dataframe(changes, width="stretch", hide_index=True)
 
         all_now = pd.concat([_merge_back(df_edit, edited_view), df_future], ignore_index=True)
 
-    # ===== Dni przyszłe
+    # Dni przyszłe (podgląd)
     if not df_future.empty:
         st.markdown("#### Dni przyszłe (podgląd)")
-        # też ograniczamy kolumny zgodnie z grupą
-        fut_view = df_future[display_cols] if set(display_cols).issubset(df_future.columns.union({"data"})) else df_future
+        fut_cols_ok = [c for c in display_cols if c in df_future.columns]
+        fut_view = df_future[fut_cols_ok] if fut_cols_ok else df_future
         st.dataframe(fut_view, width="stretch", hide_index=True)
 
-    # ===== Audit
+    # Audit
     st.subheader("Historia zmian (audit log)")
     audit = get_audit(year, month)
     st.write("Brak zmian w tym miesiącu.") if audit.empty else st.dataframe(
         audit.sort_values("czas", ascending=False), width="stretch", hide_index=True
     )
 
-    # ===== KPI (core/state_local umie stare i nowe)
+    # KPI
     st.subheader("Podsumowania KPI")
     r_m = kpi_rooms_month(all_now)
     f_m = kpi_fnb_month(all_now)
@@ -350,7 +320,7 @@ def render(readonly: bool = False) -> None:
     k2.metric("Sprzedane pokojonoce", f"{r_m['sprzedane']:.0f}", delta=f"YTD {r_y['sprzedane']:.0f}")
     k3.metric("Frekwencja", f"{r_m['frekwencja']*100:.1f}%", delta=f"YTD {r_y['frekwencja']*100:.1f}%")
     k4.metric("RevPOR", f"{r_m['revpor']:.2f} zł", delta=f"YTD {r_y['revpor']:.2f} zł")
-    k5.metric("Koszty wydziałowe", f"{r_m['k_wydzialowe']:.2f} zł", delta=f"YTD {r_y['k_wydzialowe']:.2f} zł")
+    k5.metric("Koszty wydziałowe (Pokoje)", f"{r_m['k_wydzialowe']:.2f} zł", delta=f"YTD {r_y['k_wydzialowe']:.2f} zł")
     k6.metric("Wynik (Pokoje)", f"{r_m['wynik']:.2f} zł", delta=f"YTD {r_y['wynik']:.2f} zł")
 
     g1, g2, g3 = st.columns(3)
@@ -358,7 +328,7 @@ def render(readonly: bool = False) -> None:
     g2.metric("Koszty F&B", f"{f_m['g_k_razem']:.2f} zł", delta=f"YTD {f_y['g_k_razem']:.2f} zł")
     g3.metric("Wynik F&B", f"{f_m['g_wynik']:.2f} zł", delta=f"YTD {f_y['g_wynik']:.2f} zł")
 
-    # ===== Eksport
+    # Eksport
     st.subheader("Eksport do Excela")
     if st.button("Eksportuj wszystkie lata/miesiące do XLSX", type="secondary", key="export_all_xlsx"):
         try:
@@ -380,17 +350,3 @@ def render(readonly: bool = False) -> None:
                 pass
         except Exception as e:
             st.error(f"Nie udało się wyeksportować: {e}")
-
-# ===== Eksport helper =====
-def _export_all_to_excel_bytes() -> io.BytesIO:
-    exec_state = st.session_state.get("exec", {})
-    if not exec_state:
-        raise RuntimeError("Brak danych w sesji do eksportu.")
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as wr:
-        for y, months in exec_state.items():
-            for m, df in months.items():
-                sheet = f"WYKONANIE_{int(y)}_{int(m):02d}"[:31]
-                df.to_excel(wr, index=False, sheet_name=sheet)
-    buf.seek(0)
-    return buf
