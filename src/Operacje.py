@@ -17,7 +17,7 @@ def _try_import(path: str) -> Optional[Any]:
 
 dashboard_gm = _try_import("pages.dashboard_gm")
 plan = _try_import("pages.plan")
-wykonanie = _try_import("pages.wykonanie")
+wykonanie = _try_import("pages._wykonanie")
 raporty = _try_import("pages.raporty")
 
 # --- Stan lokalny: inicjalizacja roku i migracja schematu kolumn ---
