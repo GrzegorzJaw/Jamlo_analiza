@@ -27,16 +27,92 @@ REQUIRED_COLS_DEFAULT = [
     "sprzedane_pokoje_ze","przychody_pokoje_netto",
 ]
 
+# ---------- BRACKI: detekcja 0/NaN/''/'0,00' ----------
+def _to_numeric_series(s: pd.Series) -> pd.Series:
+    # normalizacja tekstów typu "1 234,56" → "1234.56"
+    if s.dtype == object:
+        s = s.astype(str).str.strip().replace({"": None, "None": None, "nan": None})
+        s = s.str.replace(" ", "", regex=False).str.replace("\xa0", "", regex=False)
+        s = s.str.replace(",", ".", regex=False)
+    return pd.to_numeric(s, errors="coerce")
 
+def _is_missing_frame(df_sub: pd.DataFrame) -> pd.DataFrame:
+    # brak jeśli NaN lub == 0 po konwersji
+    num = df_sub.apply(_to_numeric_series)
+    miss = num.isna() | num.eq(0.0)
+    # dodatkowo puste stringi przed konwersją
+    if any(df_sub.dtypes == object):
+        empty = df_sub.astype(str).str.strip().eq("")
+        miss = miss | empty
+    return miss
+
+# ---------- GRUPY ----------
+def _detect_groups(df: pd.DataFrame) -> Dict[str, List[str]]:
+    cols = set(df.columns) - {"data"}
+    pokoje = [c for c in cols if c.startswith(("pokoje_", "sprzedane_pokoje_", "przychody_pokoje_"))]
+    dzial  = [c for c in cols if c == "fnb_wynajem_sali"]
+    gastro = [c for c in cols if c.startswith("fnb_") and c not in dzial]
+    inne   = [c for c in cols if (c.startswith("przychody_") and not c.startswith("przychody_pokoje_")) or c.startswith("proc_pokoi_")]
+    koszty = [c for c in cols if c.startswith(("r_", "g_"))]
+    return {
+        "Pokoje": sorted(pokoje),
+        "Gastronomia": sorted(gastro),
+        "Dział Sprzedaży": sorted(dzial),
+        "Inne Centra": sorted(inne),
+        "Koszty": sorted(koszty),
+    }
+
+def _group_key(group: str) -> str:
+    return (
+        group.lower()
+        .replace(" ", "_").replace("ł","l").replace("ś","s").replace("ż","z")
+        .replace("ź","z").replace("ą","a").replace("ę","e").replace("ó","o")
+        .replace("ń","n").replace("ć","c")
+    )
+
+def _filter_missing_rows(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:
+    cols = [c for c in cols if c in df.columns]
+    if not cols:
+        return df.reset_index(drop=True)
+    miss = _is_missing_frame(df[cols])
+    mask = miss.any(axis=1)
+    return df.loc[mask].reset_index(drop=True)
+
+def _merge_back(original: pd.DataFrame, edited_view: pd.DataFrame) -> pd.DataFrame:
+    if edited_view.empty:
+        return original.copy()
+    base = original.set_index("data")
+    patch = edited_view.set_index("data")
+    common = [c for c in patch.columns if c in base.columns]
+    base.loc[patch.index, common] = patch[common]
+    return base.reset_index()
+
+def _style_missing(df_like: pd.DataFrame, *, subset_cols: Optional[Iterable[str]] = None) -> pd.io.formats.style.Styler:
+    df = df_like.copy()
+    today = pd.to_datetime(date.today())
+    if "data" in df.columns:
+        df = df[df["data"] <= today]
+    cols = [c for c in (subset_cols or REQUIRED_COLS_DEFAULT) if c in df.columns]
+    if not cols:
+        return df.style
+
+    miss = _is_missing_frame(df[cols])
+    def style_subset(subdf: pd.DataFrame) -> pd.DataFrame:
+        # subdf ma kształt subsetu; dopasuj maskę do subdf
+        local = miss.reindex(subdf.index).reindex(columns=subdf.columns, fill_value=False)
+        return local.replace({True: "background-color: #ffdddd", False: ""})
+
+    return df.style.apply(style_subset, axis=None, subset=cols)
+
+# ---------- RENDER ----------
 def render(readonly: bool = False) -> None:
-    # — Context —
     role  = st.session_state.get("role", "GM")
     year  = int(st.session_state.get("year", 2025))
     month = int(st.session_state.get("month", 1))
     is_inv = readonly or (role == "INV")
     init_exec_year(year)
 
-    # — Header + month nav —
+    # Header + nawigacja miesięcy
     c1, c2, c3 = st.columns([7, 1, 1])
     with c1:
         st.header("Wykonanie – dziennik i podsumowania")
@@ -53,16 +129,14 @@ def render(readonly: bool = False) -> None:
 
     st.subheader(f"Edycja danych – {MONTHS_PL[month-1].capitalize()} {year}")
 
-    # — Data —
     df_full = get_month_df(year, month)
     df_edit, df_future = split_editable(df_full)
 
-    # — Dynamic group map —
     groups = _detect_groups(df_edit)
     groups["Wszystkie"] = [c for c in df_edit.columns if c != "data"]
 
-    # — Quick filters —
-    fc1, fc2 = st.columns([2, 3])
+    # Filtry
+    fc1, fc2, fc3 = st.columns([2, 3, 2])
     with fc1:
         only_missing = st.checkbox(
             "Pokaż tylko wiersze nieuzupełnione",
@@ -76,17 +150,24 @@ def render(readonly: bool = False) -> None:
             index=(list(groups.keys()).index("Pokoje") if "Pokoje" in groups else 0),
             key=f"group_{year}_{month}",
         )
+    with fc3:
+        # licznik po filtrze (aktualizowany niżej)
+        cnt_placeholder = st.empty()
 
     group_cols = [c for c in groups.get(group, []) if c in df_edit.columns]
     subset_cols_for_style = group_cols or [c for c in REQUIRED_COLS_DEFAULT if c in df_edit.columns]
 
+    # Widok wg filtra
     if only_missing:
         base_cols = group_cols or subset_cols_for_style
         view_df = _filter_missing_rows(df_edit, base_cols)
     else:
         view_df = df_edit
 
-    # — Editable days (to today) —
+    # licznik X z Y
+    cnt_placeholder.caption(f"Pokazujesz {len(view_df)} z {len(df_edit)} dni")
+
+    # Dni do dziś
     st.markdown("#### Dni do dziś")
     if is_inv:
         st.info("Tryb podglądu – edycja wyłączona (INV).")
@@ -100,15 +181,10 @@ def render(readonly: bool = False) -> None:
             if c != "data":
                 cfg[c] = st.column_config.NumberColumn(c, step=1.0, format="%.2f")
 
-        # 👇 klucz zależny od filtrów → brak kolizji cache
         editor_key = f"editor_{year}_{month}_{_group_key(group)}_{int(only_missing)}"
         edited_view = st.data_editor(
-            view_df,
-            column_config=cfg,
-            num_rows="fixed",
-            width="stretch",
-            hide_index=True,
-            key=editor_key,
+            view_df, column_config=cfg, num_rows="fixed", width="stretch",
+            hide_index=True, key=editor_key,
         )
 
         left, right = st.columns([1, 3])
@@ -141,26 +217,25 @@ def render(readonly: bool = False) -> None:
                 mask = after_all[cols] != before[cols]
                 styled = after_all.style.apply(
                     lambda _: mask.replace({True: "background-color: #fff3cd", False: ""}),
-                    axis=None,
-                    subset=cols,
+                    axis=None, subset=cols,
                 )
                 st.dataframe(styled, width="stretch", hide_index=True)
 
         all_now = pd.concat([_merge_back(df_edit, edited_view), df_future], ignore_index=True)
 
-    # — Future days —
+    # Dni przyszłe
     if not df_future.empty:
         st.markdown("#### Dni przyszłe (podgląd)")
         st.dataframe(df_future, width="stretch", hide_index=True)
 
-    # — Audit —
+    # Audit
     st.subheader("Historia zmian (audit log)")
     audit = get_audit(year, month)
     st.write("Brak zmian w tym miesiącu.") if audit.empty else st.dataframe(
         audit.sort_values("czas", ascending=False), width="stretch", hide_index=True
     )
 
-    # — KPI —
+    # KPI
     st.subheader("Podsumowania KPI")
     r_m = kpi_rooms_month(all_now)
     f_m = kpi_fnb_month(all_now)
@@ -174,12 +249,13 @@ def render(readonly: bool = False) -> None:
     k4.metric("RevPOR", f"{r_m['revpor']:.2f} zł", delta=f"YTD {r_y['revpor']:.2f} zł")
     k5.metric("Koszty wydziałowe", f"{r_m['k_wydzialowe']:.2f} zł", delta=f"YTD {r_y['k_wydzialowe']:.2f} zł")
     k6.metric("Wynik (Pokoje)", f"{r_m['wynik']:.2f} zł", delta=f"YTD {r_y['wynik']:.2f} zł")
+
     g1, g2, g3 = st.columns(3)
     g1.metric("Sprzedaż gastronomii", f"{f_m['sprzedaz_fnb']:.2f} zł", delta=f"YTD {f_y['sprzedaz_fnb']:.2f} zł")
     g2.metric("Koszty F&B", f"{f_m['g_k_razem']:.2f} zł", delta=f"YTD {f_y['g_k_razem']:.2f} zł")
     g3.metric("Wynik F&B", f"{f_m['g_wynik']:.2f} zł", delta=f"YTD {f_y['g_wynik']:.2f} zł")
 
-    # — Export —
+    # Eksport
     st.subheader("Eksport do Excela")
     if st.button("Eksportuj wszystkie lata/miesiące do XLSX", type="secondary", key="export_all_xlsx"):
         try:
@@ -201,68 +277,6 @@ def render(readonly: bool = False) -> None:
                 pass
         except Exception as e:
             st.error(f"Nie udało się wyeksportować: {e}")
-
-
-# ===================== helpers =====================
-
-def _group_key(group: str) -> str:
-    return group.lower().replace(" ", "_").replace("ł", "l").replace("ś", "s").replace("ż", "z").replace("ź", "z").replace("ą","a").replace("ę","e").replace("ó","o").replace("ń","n").replace("ć","c")
-
-
-def _detect_groups(df: pd.DataFrame) -> Dict[str, List[str]]:
-    cols = set(df.columns) - {"data"}
-    pokoje = [c for c in cols if c.startswith(("pokoje_", "sprzedane_pokoje_", "przychody_pokoje_"))]
-    dzial = [c for c in cols if c == "fnb_wynajem_sali"]
-    gastro = [c for c in cols if c.startswith("fnb_") and c not in dzial]
-    inne = [c for c in cols if (c.startswith("przychody_") and not c.startswith("przychody_pokoje_")) or c.startswith("proc_pokoi_")]
-    koszty = [c for c in cols if c.startswith(("r_", "g_"))]
-    return {
-        "Pokoje": sorted(pokoje),
-        "Gastronomia": sorted(gastro),
-        "Dział Sprzedaży": sorted(dzial),
-        "Inne Centra": sorted(inne),
-        "Koszty": sorted(koszty),
-    }
-
-
-def _filter_missing_rows(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:
-    cols = [c for c in cols if c in df.columns]
-    if not cols:
-        return df
-    # NaN lub 0 po konwersji numerycznej
-    miss = df[cols].isna()
-    num = df[cols].apply(pd.to_numeric, errors="coerce")
-    miss |= num.eq(0.0)
-    mask = miss.any(axis=1)
-    return df.loc[mask].reset_index(drop=True)
-
-
-def _merge_back(original: pd.DataFrame, edited_view: pd.DataFrame) -> pd.DataFrame:
-    if edited_view.empty:
-        return original.copy()
-    base = original.set_index("data")
-    patch = edited_view.set_index("data")
-    common_cols = [c for c in patch.columns if c in base.columns]
-    base.loc[patch.index, common_cols] = patch[common_cols]
-    return base.reset_index()
-
-
-def _style_missing(df_like: pd.DataFrame, *, subset_cols: Optional[Iterable[str]] = None) -> pd.io.formats.style.Styler:
-    df = df_like.copy()
-    today = pd.to_datetime(date.today())
-    if "data" in df.columns:
-        df = df[df["data"] <= today]
-    cols = [c for c in (subset_cols or REQUIRED_COLS_DEFAULT) if c in df.columns]
-    if not cols:
-        return df.style
-
-    def style_subset(subdf: pd.DataFrame) -> pd.DataFrame:
-        miss = subdf.isna()
-        num = subdf.apply(pd.to_numeric, errors="coerce")
-        miss |= num.eq(0.0)
-        return miss.replace({True: "background-color: #ffdddd", False: ""})
-
-    return df.style.apply(style_subset, axis=None, subset=cols)
 
 
 def _export_all_to_excel_bytes() -> io.BytesIO:
