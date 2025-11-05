@@ -20,7 +20,6 @@ from core.state_local import (
 )
 
 MONTHS_PL = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"]
-# Kluczowe pola, które traktujemy jako „wymagane” dla dnia
 REQUIRED_COLS = [
     "pokoje_do_sprzedania",
     "sprzedane_pokoje_bez",
@@ -64,7 +63,7 @@ def render(readonly: bool = False) -> None:
     # ===== Dni do dziś =====
     st.markdown("#### Dni do dziś")
     if is_inv:
-        # INV – widok tylko do odczytu, od razu z podświetleniem braków
+        # INV – podgląd + czerwone podświetlenie braków
         st.info("Tryb podglądu – edycja wyłączona (INV).")
         st.dataframe(_style_missing(df_edit), width="stretch", hide_index=True)
         all_now = pd.concat([df_edit, df_future], ignore_index=True)
@@ -97,7 +96,7 @@ def render(readonly: bool = False) -> None:
                     st.session_state[f"last_changes_{year}_{month}"] = changes
 
         with right:
-            # Zamiast komunikatu o brakach – podświetlenie braków
+            # Zamiast ostrzeżenia – podgląd braków na czerwono
             st.markdown("**Podgląd braków (na czerwono)**")
             st.dataframe(_style_missing(edited), width="stretch", hide_index=True)
 
@@ -180,26 +179,29 @@ def render(readonly: bool = False) -> None:
 
 
 def _style_missing(df_edit: pd.DataFrame) -> pd.io.formats.style.Styler:
-    """Zwraca Styler z czerwonym podświetleniem braków w wymaganych kolumnach."""
+    """Czerwone podświetlenie braków w wymaganych kolumnach (tylko dni do dziś)."""
     df = df_edit.copy()
-    # Tylko dni do dziś – df_edit już je reprezentuje, ale utnij na wszelki
     today = pd.to_datetime(date.today())
     if "data" in df.columns:
         df = df[df["data"] <= today]
 
     cols = [c for c in REQUIRED_COLS if c in df.columns]
     if not cols:
-        return df.style  # nic do stylowania
+        return df.style
 
-    def _mask(_df: pd.DataFrame) -> pd.DataFrame:
-        m = pd.DataFrame(False, index=_df.index, columns=_df.columns)
-        for c in cols:
-            # brak = NaN lub == 0
-            m[c] = _df[c].isna() | (_df[c].astype(float) == 0.0)
-        return m
+    def style_subset(subdf: pd.DataFrame) -> pd.DataFrame:
+        # subdf ma już kształt subsetu -> zwracamy dokładnie taki sam kształt
+        mask = subdf.isna()
+        # wartości liczbowe == 0 uznajemy za brak
+        with pd.option_context("mode.use_inf_as_na", True):
+            try:
+                mask |= subdf.astype(float).eq(0.0)
+            except Exception:
+                # kolumny nienumeryczne zostaną tylko z NaN
+                pass
+        return mask.replace({True: "background-color: #ffdddd", False: ""})
 
-    mask = _mask(df)
-    return df.style.apply(lambda _: mask.replace({True: "background-color: #ffdddd", False: ""}), axis=None, subset=cols)
+    return df.style.apply(style_subset, axis=None, subset=cols)
 
 
 def _export_all_to_excel_bytes() -> io.BytesIO:
