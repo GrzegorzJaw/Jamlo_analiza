@@ -8,7 +8,7 @@ Two roles:
 ## Uruchomienie lokalne
 ```bash
 pip install -r requirements.txt
-streamlit run src/app.py
+streamlit run src/Operacje.py
 ```
 
 ## Dane wejściowe
