@@ -31,7 +31,7 @@ MONTHS_PL = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "pa�
 # ---------------------------------------------------------------------
 def _ensure_defaults() -> None:
     s = st.session_state
-    s.setdefault("nav", "Wykonanie")  # domyślnie idziemy w Wykonanie
+    s.setdefault("nav", "_wykonanie")  # domyślnie idziemy w Wykonanie
     s.setdefault("role", "GM")        # GM = analityk, INV = inwestor
     s.setdefault("year", 2025)
     s.setdefault("month", 1)
