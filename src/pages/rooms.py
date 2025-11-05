@@ -1,3 +1,4 @@
+# file: rooms.py
 import streamlit as st
 
 def render():
@@ -9,4 +10,4 @@ def render():
         ADR=insights["ADR"].values,
         RevPAR=insights["RevPAR"].values,
     )
-    st.dataframe(px_df, use_container_width=True)
+    st.dataframe(px_df, width="stretch")

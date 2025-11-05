@@ -1,3 +1,4 @@
+# file: opex.py
 import streamlit as st
 
 def render(readonly: bool):
@@ -6,4 +7,4 @@ def render(readonly: bool):
     base = insights.reset_index()[["month"]].assign(
         payroll=20000, energy=15000, maintenance=8000, mgmt_fee=0
     )
-    st.data_editor(base, use_container_width=True, disabled=readonly)
+    st.data_editor(base, width="stretch", disabled=readonly)
