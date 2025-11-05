@@ -1,287 +1,245 @@
-# =========================
-# file: state.py
-# =========================
-import os
-from datetime import date, timedelta
-from typing import Dict, List
+# core/state_local.py
+from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Dict, List, Tuple
+
+import numpy as np
 import pandas as pd
-
-# ZOSTAJE: inicjalizacja projektu/insights (dotychczasowa logika)
-from core.data_io import default_frames
-from utils.dates import ensure_month
-from core.metrics import enrich_insights
-from core.config import ProjectConfig
-from core.var import monthly_var_vs_plan
+import streamlit as st
 
 
-# ---------- NOWOŚCI: model dzienny (po polsku) ----------
+# ──────────────────────────────────────────────────────────────────────────────
+# Dane w sesji
+# ──────────────────────────────────────────────────────────────────────────────
 
-# Pokoje – sprzedaż/parametry (dziennie)
-ROOMS_DAY_COLS = [
-    "pokoje_do_sprzedania",
-    "pokoje_oos",
-    "sprzedane_pokoje_bez",
-    "sprzedane_pokoje_ze",
-    "przychody_pokoje_netto",
-]
-
-# Gastronomia – sprzedaż (dziennie)
-FNB_REVENUE_DAY_COLS = [
-    "fnb_sniadania_pakietowe",
-    "fnb_kolacje_pakietowe",
-    "fnb_zywnosc_a_la_carte",
-    "fnb_napoje_a_la_carte",
-    "fnb_zywnosc_bankiety",
-    "fnb_napoje_bankiety",
-    "fnb_wynajem_sali",
-    "fnb_catering",
-]
-
-# Inne centra – przychody (dziennie)
-OTHER_REVENUE_DAY_COLS = [
-    "proc_pokoi_parking",
-    "przychody_parking",
-    "przychody_sklep_recepcyjny",
-    "przychody_pralnia_gosci",
-    "przychody_transport_gosci",
-    "przychody_rekreacja",
-    "przychody_pozostale",
-]
-
-# Pokoje – koszty (dziennie)
-ROOMS_COST_PERSONNEL = [
-    "r_osobowe_wynagrodzenia",
-    "r_osobowe_zus",
-    "r_osobowe_pfron",
-    "r_osobowe_wyzywienie",
-    "r_osobowe_odziez_bhp",
-    "r_osobowe_medyczne",
-    "r_osobowe_inne",
-]
-ROOMS_COST_MATERIALS = [
-    "r_materialy_eksploatacyjne_spozywcze",
-    "r_materialy_kosmetyki_srodki",
-    "r_materialy_inne_biurowe",
-]
-ROOMS_COST_SERVICES = [
-    "r_uslugi_sprzatania",
-    "r_uslugi_pranie_zew",
-    "r_uslugi_pranie_odziezy_sluzbowej",
-    "r_uslugi_wynajem_sprzetu",
-    "r_uslugi_inne_bhp",
-]
-ROOMS_COST_OTHER = ["r_pozostale_prowizje_ota_gds"]
-
-# Gastronomia – koszty (skrót; można rozszerzać)
-FNB_COST_RAW = ["g_koszt_surowca_zywnosc_pln", "g_koszt_surowca_napoje_pln"]
-FNB_COST_PERSONNEL = [
-    "g_osobowe_wynagrodzenia",
-    "g_osobowe_zus",
-    "g_osobowe_pfron",
-    "g_osobowe_wyzywienie",
-    "g_osobowe_odziez_bhp",
-    "g_osobowe_medyczne",
-    "g_osobowe_inne",
-]
-FNB_COST_MATERIALS = [
-    "g_materialy_zastawa",
-    "g_materialy_drobne_wyposazenie",
-    "g_materialy_bielizna_dekoracje",
-    "g_materialy_karty_dan",
-    "g_materialy_srodki_czystosci",
-    "g_materialy_inne",
-]
-FNB_COST_SERVICES = [
-    "g_uslugi_sprzatania_tapicerki",
-    "g_uslugi_pranie_odziezy_sluzbowej",
-    "g_uslugi_pranie_bielizny_gastro",
-    "g_uslugi_wynajem_sprzetu_lokali",
-    "g_uslugi_inne",
-]
-
-DAY_COLUMNS: List[str] = (
-    ROOMS_DAY_COLS
-    + FNB_REVENUE_DAY_COLS
-    + OTHER_REVENUE_DAY_COLS
-    + ROOMS_COST_PERSONNEL
-    + ROOMS_COST_MATERIALS
-    + ROOMS_COST_SERVICES
-    + ROOMS_COST_OTHER
-    + FNB_COST_RAW
-    + FNB_COST_PERSONNEL
-    + FNB_COST_MATERIALS
-    + FNB_COST_SERVICES
-)
-
-
-def _month_dates(year: int, month: int) -> List[pd.Timestamp]:
-    start = pd.Timestamp(year=year, month=month, day=1)
-    end = (start + pd.offsets.MonthBegin(1))
-    days = pd.date_range(start, end - pd.Timedelta(days=1), freq="D")
-    return list(days)
-
-
-def _create_month_df(year: int, month: int) -> pd.DataFrame:
-    """Pusta tabela dni × metryki (0.0)."""
-    df = pd.DataFrame({"data": _month_dates(year, month)})
-    for c in DAY_COLUMNS:
-        df[c] = 0.0
-    return df
-
-
-def _ensure_exec(year: int) -> None:
-    import streamlit as st
-
+def _ensure_state():
     if "exec" not in st.session_state:
-        st.session_state["exec"] = {}
-    if year not in st.session_state["exec"]:
-        st.session_state["exec"][year] = {}
-    if "exec_snap" not in st.session_state:
-        st.session_state["exec_snap"] = {}
-    if year not in st.session_state["exec_snap"]:
-        st.session_state["exec_snap"][year] = {}
-    if "exec_audit" not in st.session_state:
-        st.session_state["exec_audit"] = {}
-    if year not in st.session_state["exec_audit"]:
-        st.session_state["exec_audit"][year] = {}
+        st.session_state["exec"] = {}       # {year: {month: DataFrame}}
+    if "audit" not in st.session_state:
+        st.session_state["audit"] = {}      # {year: {month: DataFrame}}
 
 
 def init_exec_year(year: int) -> None:
-    """Tworzy 12 miesięcy + snapshot + audit log dla danego roku."""
-    import streamlit as st
-
-    _ensure_exec(year)
+    """Utwórz puste miesiące (1..12) w danym roku, jeśli brak."""
+    _ensure_state()
+    y = st.session_state["exec"].setdefault(year, {})
     for m in range(1, 13):
-        if m not in st.session_state["exec"][year]:
-            df = _create_month_df(year, m)
-            st.session_state["exec"][year][m] = df
-            st.session_state["exec_snap"][year][m] = df.copy(deep=True)
-            st.session_state["exec_audit"][year][m] = []  # lista eventów zmian
+        if m not in y:
+            y[m] = _empty_month_df(year, m)
+    a = st.session_state["audit"].setdefault(year, {})
+    for m in range(1, 13):
+        if m not in a:
+            a[m] = _empty_audit_df()
 
 
-def get_month_df(year: int, month: int) -> pd.DataFrame:
-    import streamlit as st
-
-    _ensure_exec(year)
-    return st.session_state["exec"][year][month].copy(deep=True)
-
-
-def _save_csv(year: int, month: int, df: pd.DataFrame) -> None:
-    outdir = "/mnt/data/hotel_exec"
-    os.makedirs(outdir, exist_ok=True)
-    df.to_csv(os.path.join(outdir, f"{year}_{month:02d}.csv"), index=False)
+def _empty_month_df(year: int, month: int) -> pd.DataFrame:
+    days = pd.date_range(f"{year}-{month:02d}-01", periods=32, freq="D")
+    days = days[days.month == month]
+    df = pd.DataFrame({"data": pd.to_datetime(days)})
+    df = df.astype({"data": "datetime64[ns]"})
+    return df
 
 
-def _diff_frames(before: pd.DataFrame, after: pd.DataFrame) -> pd.DataFrame:
-    """Long-DF: data, kolumna, stara_wartosc, nowa_wartosc (tylko zmiany)."""
-    before = before.sort_values("data").reset_index(drop=True)
-    after = after.sort_values("data").reset_index(drop=True)
-    rows = []
-    for col in after.columns:
-        if col == "data":
-            continue
-        dif = before[col] != after[col]
-        if dif.any():
-            changed = after.loc[dif, ["data", col]].copy()
-            changed["kolumna"] = col
-            changed["stara_wartosc"] = before.loc[dif, col].values
-            changed["nowa_wartosc"] = after.loc[dif, col].values
-            rows.append(changed[["data", "kolumna", "stara_wartosc", "nowa_wartosc"]])
-    return (
-        pd.concat(rows, ignore_index=True)
-        if rows
-        else pd.DataFrame(columns=["data", "kolumna", "stara_wartosc", "nowa_wartosc"])
+def _empty_audit_df() -> pd.DataFrame:
+    return pd.DataFrame(columns=["czas", "uzytkownik", "data", "kolumna", "stara", "nowa"]).astype(
+        {"czas": "datetime64[ns]", "uzytkownik": "string", "data": "datetime64[ns]", "kolumna": "string", "stara": "string", "nowa": "string"}
     )
 
 
-def save_month_df(year: int, month: int, edited: pd.DataFrame, user: str = "GM") -> pd.DataFrame:
-    """
-    Zapisz miesiąc, zapisz CSV, zrób audit log, zwróć ramkę zmian z tego zapisu.
-    Dlaczego: śledzimy kto/ kiedy/ co zmienił (compliance).
-    """
-    import streamlit as st
+def get_month_df(year: int, month: int) -> pd.DataFrame:
+    _ensure_state()
+    return st.session_state["exec"][year][month].copy()
 
-    _ensure_exec(year)
-    before = st.session_state["exec"][year][month]
-    changes = _diff_frames(before, edited)
 
-    if not changes.empty:
-        audit = st.session_state["exec_audit"][year][month]
-        ts = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-        for _, r in changes.iterrows():
-            audit.append(
-                {
-                    "czas": ts,
-                    "kto": user,
-                    "data": pd.to_datetime(r["data"]).date().isoformat(),
-                    "kolumna": r["kolumna"],
-                    "stara": float(r["stara_wartosc"]),
-                    "nowa": float(r["nowa_wartosc"]),
-                }
-            )
-        st.session_state["exec_audit"][year][month] = audit
+def save_month_df(year: int, month: int, new_df: pd.DataFrame, user: str = "GM") -> pd.DataFrame:
+    """Zapisz miesiąc, zwróć zmiany (do audytu)."""
+    _ensure_state()
+    new_df = _normalize_df(new_df)
 
-    st.session_state["exec"][year][month] = edited.copy(deep=True)
-    st.session_state["exec_snap"][year][month] = edited.copy(deep=True)
-    _save_csv(year, month, edited)
-    return changes
+    old = st.session_state["exec"][year][month]
+    old_i = old.set_index("data")
+    new_i = new_df.set_index("data")
+
+    # align kolumn
+    all_cols = sorted(set(old_i.columns) | set(new_i.columns))
+    old_i = old_i.reindex(columns=all_cols)
+    new_i = new_i.reindex(columns=all_cols)
+
+    neq = (old_i.fillna(np.nan).astype(object) != new_i.fillna(np.nan).astype(object))
+    changes_list = []
+    ts = datetime.now()
+    for d, row in neq.iterrows():
+        changed_cols = row.index[row.values]
+        for c in changed_cols:
+            changes_list.append({
+                "czas": ts,
+                "uzytkownik": user,
+                "data": pd.to_datetime(d),
+                "kolumna": c,
+                "stara": _to_str(old_i.at[d, c]),
+                "nowa": _to_str(new_i.at[d, c]),
+            })
+
+    st.session_state["exec"][year][month] = new_df.reset_index(drop=True)
+
+    if changes_list:
+        delta = pd.DataFrame(changes_list)
+        st.session_state["audit"][year][month] = pd.concat(
+            [st.session_state["audit"][year][month], delta], ignore_index=True
+        )
+        return delta
+    return pd.DataFrame(columns=["czas", "uzytkownik", "data", "kolumna", "stara", "nowa"])
 
 
 def get_audit(year: int, month: int) -> pd.DataFrame:
-    import streamlit as st
-
-    _ensure_exec(year)
-    return pd.DataFrame(st.session_state["exec_audit"][year][month])
+    _ensure_state()
+    return st.session_state["audit"][year][month].copy()
 
 
-def split_editable(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """<= dziś (edytowalne) | > dziś (readonly)."""
-    today = pd.Timestamp.today().normalize()
-    d = df.copy()
-    d["data"] = pd.to_datetime(d["data"])
-    return d[d["data"] <= today].copy(), d[d["data"] > today].copy()
+def split_editable(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Podziel na dni ≤ dziś (edycja) i > dziś (podgląd)."""
+    today = pd.to_datetime(date.today())
+    if "data" not in df.columns:
+        return df.copy(), pd.DataFrame(columns=df.columns)
+    mask = df["data"] <= today
+    return df.loc[mask].reset_index(drop=True), df.loc[~mask].reset_index(drop=True)
 
 
-def missing_days(df: pd.DataFrame) -> pd.Series:
-    """Dni bez danych – gdy brak przychodu z pokoi."""
-    return df.loc[df["przychody_pokoje_netto"] <= 0.0, "data"]
+def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Zapewnij kolumnę 'data' typu datetime i posortuj."""
+    out = df.copy()
+    if "data" in out.columns:
+        out["data"] = pd.to_datetime(out["data"])
+        out = out.sort_values("data")
+    return out.reset_index(drop=True)
 
 
-# ---------- ISTNIEJĄCE: inicjalizacja aplikacji (plan/kpi) ----------
+def _to_str(v) -> str:
+    if pd.isna(v):
+        return ""
+    return str(v)
 
-def init_session(st, data_book, project_sheets=None):
-    # 1) Ramy danych (domyślne lub z Excela danych)
-    insights, raw, kpi = default_frames()
-    if data_book.get("insights") is not None:
-        insights = ensure_month(data_book["insights"])
-    if data_book.get("raw") is not None:
-        raw = ensure_month(data_book["raw"])
-    if data_book.get("kpi") is not None:
-        kpi = data_book["kpi"]
 
-    # 2) Wzbogacenie KPI (RevPAR, BE_rooms, ...)
-    insights = enrich_insights(insights)
+# ──────────────────────────────────────────────────────────────────────────────
+# KPI – kompatybilne nazwy (stare i nowe)
+# ──────────────────────────────────────────────────────────────────────────────
 
-    # 3) Session state – plan/forecast/actual
-    if "plan" not in st.session_state:
-        st.session_state["plan"] = insights[
-            ["ADR", "occ", "var_cost_per_occ_room", "fixed_costs", "unalloc", "mgmt_fees"]
-        ].rename(columns={"ADR": "ADR_plan", "occ": "Occ_plan"})
+def _col(df: pd.DataFrame, *candidates: str) -> pd.Series:
+    """Zwróć serię pierwszej istniejącej kolumny z listy (float, NaN→0)."""
+    for c in candidates:
+        if c in df.columns:
+            return pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    # brak kolumny → zera
+    return pd.Series(0.0, index=df.index, dtype="float64")
 
-    if "forecast_daily" not in st.session_state:
-        today = pd.Timestamp.today().normalize()
-        fut = pd.date_range(today, today + pd.Timedelta(days=29), freq="D")
-        st.session_state["forecast_daily"] = pd.DataFrame({"date": fut, "ADR_fc": 300.0, "occ_fc": 0.7})
 
-    if "actual_daily" not in st.session_state:
-        st.session_state["actual_daily"] = pd.DataFrame(columns=["date", "sold_rooms", "ADR", "fnb_rev", "other_rev"])
+def _sum_prefix(df: pd.DataFrame, prefixes: List[str]) -> float:
+    cols = [c for c in df.columns if any(c.startswith(p) for p in prefixes)]
+    if not cols:
+        return 0.0
+    val = pd.to_numeric(df[cols].stack(), errors="coerce").fillna(0.0).sum()
+    return float(val)
 
-    # 4) Konfiguracja projektu z Excela (Zakładki/Interakcje/Uprawnienia/Procesy)
-    st.session_state["project_config"] = ProjectConfig(project_sheets or {})
 
-    # 5) Publikacja do session + wstępny VAR m/m
-    st.session_state["insights"] = insights
-    st.session_state["raw"] = raw
-    st.session_state["kpi"] = kpi
-    st.session_state["var_mm"] = monthly_var_vs_plan(insights, st.session_state["actual_daily"])
+# ── Pokoje (miesiąc)
+
+def kpi_rooms_month(df: pd.DataFrame) -> Dict[str, float]:
+    # dostępne: nowe (pokoje_dostepne_qty) lub stare (pokoje_do_sprzedania)
+    rooms_available = float((_col(df, "pokoje_dostepne_qty", "pokoje_do_sprzedania")
+                             - _col(df, "pokoje_oos_qty", "pokoje_oos")).sum())
+    sold = float((_col(df, "pokoje_sprzedane_bez_qty", "sprzedane_pokoje_bez")
+                  + _col(df, "pokoje_sprzedane_ze_qty", "sprzedane_pokoje_ze")).sum())
+    revenue_rooms = float(_col(df, "pokoje_przychod_netto_pln", "przychody_pokoje_netto").sum())
+
+    frekwencja = (sold / rooms_available) if rooms_available > 0 else 0.0
+    revpor = (revenue_rooms / sold) if sold > 0 else 0.0
+
+    # koszty wydziałowe (Pokoje) – nowe prefiks 'koszt_r_' lub stare 'r_'
+    k_wydzialowe = _sum_prefix(df, ["koszt_r_", "r_"])
+    wynik = revenue_rooms - k_wydzialowe
+
+    return {
+        "zdolnosc": rooms_available,
+        "sprzedane": sold,
+        "frekwencja": frekwencja,
+        "revpor": revpor,
+        "k_wydzialowe": k_wydzialowe,
+        "wynik": wynik,
+    }
+
+
+def kpi_fnb_month(df: pd.DataFrame) -> Dict[str, float]:
+    # sprzedaż F&B = suma kolumn zaczynających się od 'fnb_' (wyłączamy ew. pola nie-PLN jeżeli się pojawią)
+    fnb_cols = [c for c in df.columns if c.startswith("fnb_")]
+    sprzedaz_fnb = 0.0
+    if fnb_cols:
+        # bierzemy tylko numeryczne
+        sprzedaz_fnb = float(pd.to_numeric(df[fnb_cols].stack(), errors="coerce").fillna(0.0).sum())
+
+    # koszty F&B – nowe 'koszt_g_' lub stare 'g_'
+    g_k_razem = _sum_prefix(df, ["koszt_g_", "g_"])
+    g_wynik = sprzedaz_fnb - g_k_razem
+
+    return {
+        "sprzedaz_fnb": sprzedaz_fnb,
+        "g_k_razem": g_k_razem,
+        "g_wynik": g_wynik,
+    }
+
+
+# ── Pokoje / F&B – YTD
+
+def kpi_rooms_ytd(exec_state: Dict, year: int, month: int) -> Dict[str, float]:
+    _ensure_state()
+    data = st.session_state["exec"] if not exec_state else exec_state
+    total = {"zdolnosc": 0.0, "sprzedane": 0.0, "frekwencja": 0.0, "revpor": 0.0, "k_wydzialowe": 0.0, "wynik": 0.0}
+    agg_available = 0.0
+    agg_sold = 0.0
+    agg_revenue = 0.0
+    agg_koszty = 0.0
+
+    for m in range(1, month + 1):
+        df = data.get(year, {}).get(m)
+        if not isinstance(df, pd.DataFrame):
+            continue
+        # MIESIĄC
+        available = float((_col(df, "pokoje_dostepne_qty", "pokoje_do_sprzedania")
+                           - _col(df, "pokoje_oos_qty", "pokoje_oos")).sum())
+        sold = float((_col(df, "pokoje_sprzedane_bez_qty", "sprzedane_pokoje_bez")
+                      + _col(df, "pokoje_sprzedane_ze_qty", "sprzedane_pokoje_ze")).sum())
+        revenue = float(_col(df, "pokoje_przychod_netto_pln", "przychody_pokoje_netto").sum())
+        k_r = _sum_prefix(df, ["koszt_r_", "r_"])
+        agg_available += available
+        agg_sold += sold
+        agg_revenue += revenue
+        agg_koszty += k_r
+
+    total["zdolnosc"] = agg_available
+    total["sprzedane"] = agg_sold
+    total["frekwencja"] = (agg_sold / agg_available) if agg_available > 0 else 0.0
+    total["revpor"] = (agg_revenue / agg_sold) if agg_sold > 0 else 0.0
+    total["k_wydzialowe"] = agg_koszty
+    total["wynik"] = agg_revenue - agg_koszty
+    return total
+
+
+def kpi_fnb_ytd(exec_state: Dict, year: int, month: int) -> Dict[str, float]:
+    _ensure_state()
+    data = st.session_state["exec"] if not exec_state else exec_state
+    sprzedaz = 0.0
+    koszty = 0.0
+    for m in range(1, month + 1):
+        df = data.get(year, {}).get(m)
+        if not isinstance(df, pd.DataFrame):
+            continue
+        fnb_cols = [c for c in df.columns if c.startswith("fnb_")]
+        if fnb_cols:
+            sprzedaz += float(pd.to_numeric(df[fnb_cols].stack(), errors="coerce").fillna(0.0).sum())
+        koszty += _sum_prefix(df, ["koszt_g_", "g_"])
+    return {
+        "sprzedaz_fnb": sprzedaz,
+        "g_k_razem": koszty,
+        "g_wynik": sprzedaz - koszty,
+    }
