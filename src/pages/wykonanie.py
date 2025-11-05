@@ -23,27 +23,7 @@ from core.state_local import (
 
 MONTHS_PL = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"]
 
-# —— definicje kolumn wg grup (tylko przychody / metryki operacyjne; koszty łapiemy po prefiksach r_/g_) ——
-POKOJE_COLS = [
-    "pokoje_do_sprzedania","pokoje_oos",
-    "sprzedane_pokoje_bez","sprzedane_pokoje_ze",
-    "przychody_pokoje_netto",
-]
-GASTRO_COLS = [
-    "fnb_sniadania_pakietowe","fnb_kolacje_pakietowe",
-    "fnb_zywnosc_a_la_carte","fnb_napoje_a_la_carte",
-    "fnb_zywnosc_bankiety","fnb_napoje_bankiety",
-    # UWAGA: wynajem sal przeniesiony do Dział Sprzedaży (zgodnie z Twoją prośbą)
-    "fnb_catering",
-]
-DZIAL_SPRZEDAZY_COLS = ["fnb_wynajem_sali"]
-INNE_CENTRA_COLS = [
-    "proc_pokoi_parking","przychody_parking","przychody_sklep_recepcyjny",
-    "przychody_pralnia_gosci","przychody_transport_gosci",
-    "przychody_rekreacja","przychody_pozostale",
-]
-
-# Minimalny zestaw kolumn wymaganych przy brakach (domyślny dla grupy „Pokoje”)
+# Minimalny zestaw „wymaganych” pól dla grupy Pokoje (fallback)
 REQUIRED_COLS_DEFAULT = [
     "pokoje_do_sprzedania","sprzedane_pokoje_bez",
     "sprzedane_pokoje_ze","przychody_pokoje_netto",
@@ -80,6 +60,11 @@ def render(readonly: bool = False) -> None:
     df_full = get_month_df(year, month)
     df_edit, df_future = split_editable(df_full)
 
+    # —— Dynamiczna mapa grup na podstawie istniejących kolumn ——
+    groups = _detect_groups(df_edit)
+    # fallback dla „Wszystkie” – użyjemy domyślnych metryk, jeśli ktoś włączy „tylko braki”
+    groups["Wszystkie"] = list(df_edit.columns.drop(labels=["data"], errors="ignore"))
+
     # ——— Filtry szybkie nad pierwszą tabelą ———
     fc1, fc2 = st.columns([2, 3])
     with fc1:
@@ -87,25 +72,23 @@ def render(readonly: bool = False) -> None:
             "Pokaż tylko wiersze nieuzupełnione",
             value=False,
             key=f"only_missing_{year}_{month}",
-            help="W edytorze pokaże tylko dni z brakami w wybranej grupie kolumn.",
+            help="Pokazuje tylko dni z brakami (NaN lub 0) w wybranej grupie kolumn.",
         )
     with fc2:
         group = st.selectbox(
             "Grupa kolumn",
-            ["Wszystkie", "Pokoje", "Gastronomia", "Dział Sprzedaży", "Inne Centra", "Koszty"],
-            index=1,  # domyślnie Pokoje
+            list(groups.keys()),
+            index=(list(groups.keys()).index("Pokoje") if "Pokoje" in groups else 0),
             key=f"group_{year}_{month}",
         )
 
-    # Wyznacz kolumny brane pod uwagę przez wybrany filtr grupy
-    group_cols = _columns_for_group(df_edit, group)
-    required_cols_for_style = group_cols or REQUIRED_COLS_DEFAULT
+    group_cols = [c for c in groups.get(group, []) if c in df_edit.columns]
+    subset_cols_for_style = group_cols or [c for c in REQUIRED_COLS_DEFAULT if c in df_edit.columns]
 
-    # Jeśli włączony filtr „tylko braki” — zbuduj widok z brakującymi wierszami
-    if only_missing and group_cols:
-        view_df = _filter_missing_rows(df_edit, group_cols)
-    elif only_missing and not group_cols:  # „Wszystkie” => bierzemy domyślne metryki pokoi
-        view_df = _filter_missing_rows(df_edit, REQUIRED_COLS_DEFAULT)
+    # Jeśli włączony filtr „tylko braki” — budujemy widok zawężony do wierszy z brakami
+    if only_missing:
+        base_cols = group_cols or subset_cols_for_style
+        view_df = _filter_missing_rows(df_edit, base_cols)
     else:
         view_df = df_edit
 
@@ -113,10 +96,9 @@ def render(readonly: bool = False) -> None:
     st.markdown("#### Dni do dziś")
     if is_inv:
         st.info("Tryb podglądu – edycja wyłączona (INV).")
-        st.dataframe(_style_missing(view_df, subset_cols=required_cols_for_style), width="stretch", hide_index=True)
+        st.dataframe(_style_missing(view_df, subset_cols=subset_cols_for_style), width="stretch", hide_index=True)
         all_now = pd.concat([df_edit, df_future], ignore_index=True)
     else:
-        # Konfiguracja edytora (zablokuj kolumnę data)
         cfg: Dict[str, st.column_config.BaseColumn] = {
             "data": st.column_config.DateColumn("Data", disabled=True)
         }
@@ -137,8 +119,7 @@ def render(readonly: bool = False) -> None:
         with left:
             who = st.text_input("Kto zapisuje?", value="GM", help="Imię / skrót do logu zmian.")
             if st.button("Zapisz w sesji", type="primary", key=f"save_{year}_{month}"):
-                # Scal edytowaną podtabelę z pełnym df_edit (po kolumnie 'data')
-                merged_edit = _merge_back(df_edit, edited_view)
+                merged_edit = _merge_back(df_edit, edited_view)  # scalenie subsetu do pełnego miesiąca
                 new_full = pd.concat([merged_edit, df_future], ignore_index=True)
                 changes = save_month_df(year, month, new_full, user=who)
                 if changes.empty:
@@ -150,7 +131,7 @@ def render(readonly: bool = False) -> None:
         with right:
             st.markdown("**Podgląd braków (na czerwono)**")
             st.dataframe(
-                _style_missing(edited_view, subset_cols=required_cols_for_style),
+                _style_missing(edited_view, subset_cols=subset_cols_for_style),
                 width="stretch",
                 hide_index=True,
             )
@@ -235,33 +216,35 @@ def render(readonly: bool = False) -> None:
 
 # ===================== helpers =====================
 
-def _columns_for_group(df: pd.DataFrame, group: str) -> List[str]:
-    """Zwraca listę kolumn należących do wybranej grupy (przecięcie z istniejącymi w df)."""
-    all_cols = set(df.columns)
-    if group == "Pokoje":
-        base = POKOJE_COLS
-    elif group == "Gastronomia":
-        base = GASTRO_COLS
-    elif group == "Dział Sprzedaży":
-        base = DZIAL_SPRZEDAZY_COLS
-    elif group == "Inne Centra":
-        base = INNE_CENTRA_COLS
-    elif group == "Koszty":
-        # Wszystkie koszty: prefiks r_ (pokoje koszty) i g_ (koszty F&B)
-        base = [c for c in df.columns if c.startswith("r_") or c.startswith("g_")]
-    else:  # „Wszystkie”
-        base = list(df.columns)  # ale braki później i tak liczymy po metrykach default/groupe
-    # usuń kolumny techniczne
-    exclude = {"data"}
-    return [c for c in base if c in all_cols and c not in exclude]
+def _detect_groups(df: pd.DataFrame) -> Dict[str, List[str]]:
+    """
+    Dynamicznie buduje grupy kolumn:
+    - Pokoje: prefiksy pokoje_, sprzedane_pokoje_, przychody_pokoje_
+    - Gastronomia: prefiks fnb_ (poza fnb_wynajem_sali → Dział Sprzedaży)
+    - Dział Sprzedaży: fnb_wynajem_sali
+    - Inne Centra: przychody_* (poza przychody_pokoje_ i fnb_*), proc_pokoi_parking
+    - Koszty: prefiks r_ lub g_
+    """
+    cols = set(df.columns) - {"data"}
+    pokoje = [c for c in cols if c.startswith(("pokoje_", "sprzedane_pokoje_", "przychody_pokoje_"))]
+    dzial = [c for c in cols if c == "fnb_wynajem_sali"]
+    gastro = [c for c in cols if c.startswith("fnb_") and c not in dzial]
+    inne = [c for c in cols if (c.startswith("przychody_") and not c.startswith("przychody_pokoje_")) or c.startswith("proc_pokoi_")]
+    koszty = [c for c in cols if c.startswith(("r_", "g_"))]
+    return {
+        "Pokoje": sorted(pokoje),
+        "Gastronomia": sorted(gastro),
+        "Dział Sprzedaży": sorted(dzial),
+        "Inne Centra": sorted(inne),
+        "Koszty": sorted(koszty),
+    }
 
 
 def _filter_missing_rows(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:
-    """Zwraca tylko te wiersze, w których w dowolnej z kolumn `cols` jest NaN lub 0."""
+    """Zwraca tylko te wiersze, gdzie w dowolnej z `cols` jest NaN lub 0."""
     cols = [c for c in cols if c in df.columns]
     if not cols:
         return df
-    # NaN lub 0 jako brak
     miss = df[cols].isna()
     with pd.option_context("mode.use_inf_as_na", True):
         try:
@@ -273,12 +256,11 @@ def _filter_missing_rows(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:
 
 
 def _merge_back(original: pd.DataFrame, edited_view: pd.DataFrame) -> pd.DataFrame:
-    """Wstrzykuje edytowane wiersze z widoku (subset) do pełnego df_edit (po kluczu 'data')."""
+    """Wstrzykuje edytowany subset (po 'data') do pełnego df_edit."""
     if edited_view.empty:
         return original.copy()
     base = original.set_index("data")
     patch = edited_view.set_index("data")
-    # wyrównaj kolumny (tylko wspólne aktualizujemy)
     common_cols = [c for c in patch.columns if c in base.columns]
     base.loc[patch.index, common_cols] = patch[common_cols]
     return base.reset_index()
