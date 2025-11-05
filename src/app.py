@@ -2,190 +2,177 @@
 from __future__ import annotations
 
 import os
-import pandas as pd
+from typing import Any, Callable, Optional
+
 import streamlit as st
 
-# Core
-from core.state import init_session
-from core.navigation import build_pages
-from core.i18n import PAGE_LABELS_PL, resolve_sheet_name
+# ==== Tryb pracy: lokalny (bez wczytywania/pliku w chmurze na starcie) ====
+LOCAL_ONLY = True  # gdy przejdziemy do pracy z GDrive, ustawimy False/wykryjemy z env
 
-# Tryb lokalny – bez Drive
-USE_DRIVE = False  # docelowo ustawimy to na True, gdy wdrożymy eksport do GDrive
-
-# Stuby, żeby reszta kodu się nie sypała, jeśli gdzieś jest wywołanie:
-def resolve_drive_id(value: str) -> str: return ""
-def download_excel_from_drive(file_id_or_url: str) -> dict: return {}
-def upload_excel_to_drive(file_id_or_url: str, frames: dict) -> None: return None
-
-# Strony
-from pages import (
-    dashboard_gm, plan, wykonanie, opex, rooms, fnb, raporty, covenants, tasks, settings
-)
-
-# --------------------------------------------------------------------
-# USTAWIENIA STRONY
-# --------------------------------------------------------------------
-st.set_page_config(page_title="Analiza hotelowa", layout="wide")
-
-# --------------------------------------------------------------------
-# POMOCNICZE
-# --------------------------------------------------------------------
-def _xls_to_dict(path_or_file) -> dict[str, pd.DataFrame]:
-    xls = pd.ExcelFile(path_or_file)
-    return {name: xls.parse(name) for name in xls.sheet_names}
-
-def _safe_render(mod, **kwargs):
-    """Wywołaj stronę z argumentami, a jeśli ma starszą sygnaturę – bez nich."""
+# ==== Importy stron (bez wymuszania obecności wszystkich modułów) ====
+def _try_import(path: str) -> Optional[Any]:
     try:
-        return mod.render(**kwargs)
+        module = __import__(path, fromlist=["render"])
+        return module
+    except Exception:
+        return None
+
+dashboard_gm = _try_import("pages.dashboard_gm")
+plan = _try_import("pages.plan")
+wykonanie = _try_import("pages.wykonanie")
+raporty = _try_import("pages.raporty")
+
+# ==== Prosty init sesji (bez I/O) ====
+def _ensure_defaults() -> None:
+    s = st.session_state
+    s.setdefault("nav", "Wykonanie")
+    s.setdefault("role", "GM")   # GM = analityk, INV = inwestor
+    s.setdefault("year", 2025)
+    s.setdefault("month", 1)
+    # miejsce na inne Twoje klucze, nie kasujemy istniejących:
+    s.setdefault("insights", {})     # zgodność z Twoim wcześniejszym init_session
+    s.setdefault("data_book", {})    # projekt/plan, obecnie nieużywany w LOCAL_ONLY
+    s.setdefault("project_sheets", {})
+
+MONTHS_PL = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"]
+
+
+# ==== Pomocnicze: bezpieczne wywołanie render() z różnymi sygnaturami ====
+def _safe_render(mod: Any, **kwargs) -> None:
+    """Dlaczego: strony mogą mieć różne sygnatury render()."""
+    if mod is None:
+        st.info("Moduł strony jest obecnie niedostępny.")
+        return
+    render: Callable[..., Any] = getattr(mod, "render", None)
+    if render is None:
+        st.info("Strona nie udostępnia funkcji render().")
+        return
+    try:
+        render(**kwargs)
     except TypeError:
-        return mod.render()
+        # stara sygnatura bez parametrów
+        render()
 
-def _frames_for_save() -> dict[str, pd.DataFrame]:
-    sm = st.session_state.get("sheets_map", {})
-    out: dict[str, pd.DataFrame] = {}
-    plan_df = st.session_state.get("plan")
-    if isinstance(plan_df, pd.DataFrame) and sm.get("PLAN"):
-        out[sm["PLAN"]] = plan_df
-    actual_df = st.session_state.get("actual_daily")
-    if isinstance(actual_df, pd.DataFrame) and sm.get("WYKONANIE"):
-        out[sm["WYKONANIE"]] = actual_df
-    return out
 
-# --------------------------------------------------------------------
-# SIDEBAR: LOGOWANIE + WYBÓR PROJEKTU
-# --------------------------------------------------------------------
-st.sidebar.title("Logowanie")
-role = st.sidebar.radio("Rola", ["GM", "INV"], index=0, horizontal=True)
+# ==== Sidebar: NAWIGACJA na górze, niżej kontekst (rola/rok/miesiąc) ====
+def _sidebar_context_and_nav() -> tuple[str, bool, int, int]:
+    _ensure_defaults()
 
-st.sidebar.subheader("Projekt aplikacji (Excel)")
-proj_upload = st.sidebar.file_uploader("Wgraj plik projektu", type=["xlsx"])
+    st.sidebar.title("Finansowy Hotele")
 
-# 1) z uploadu
-project_sheets: dict[str, pd.DataFrame] = {}
-if proj_upload is not None:
-    try:
-        project_sheets = _xls_to_dict(proj_upload)
-    except Exception as e:
-        st.sidebar.error(f"Nie mogę odczytać pliku projektu: {e}")
+    # --- ewentualna sekcja chmury (wyłączona w LOCAL_ONLY) ---
+    with st.sidebar.expander("Diagnostyka Drive", expanded=False):
+        st.caption("Tryb lokalny – wczytywanie/zapis do chmury wyłączone.")
+        st.button("Zaloguj (wczytaj z chmury)", disabled=True)
+        st.button("Zapisz do chmury", disabled=True)
+        st.button("Wyloguj (zapisz i wyczyść)", disabled=True)
 
-# 2) fallback – lokalnie w repo lub w /mnt/data
-if not project_sheets:
-    for p in [
-        "Projekt_aplikacji_hotelowej_20251028_074602.xlsx",
-        "/mnt/data/Projekt_aplikacji_hotelowej_20251028_074602.xlsx",
-    ]:
-        if os.path.exists(p):
-            try:
-                project_sheets = _xls_to_dict(p)
-                break
-            except Exception as e:
-                st.sidebar.error(f"Problem z odczytem projektu ({p}): {e}")
+    # --- NAWIGACJA (TOP) ---
+    nav = st.sidebar.radio(
+        "Nawigacja",
+        options=["Pulpit GM", "Plan", "Wykonanie", "Raporty"],
+        index=["Pulpit GM", "Plan", "Wykonanie", "Raporty"].index(st.session_state["nav"]),
+        horizontal=False,
+    )
+    st.session_state["nav"] = nav
 
-if not project_sheets:
-    st.sidebar.warning("Nie znaleziono pliku projektu. Wgraj go w panelu lub umieść w /mnt/data/.")
+    st.sidebar.markdown("---")
 
-# --------------------------------------------------------------------
-# GOOGLE DRIVE: ID + PRZYCISKI
-# --------------------------------------------------------------------
-st.sidebar.subheader("Google Drive — Plan Finansowy Hotele")
-raw_drive_id = st.secrets.get("DRIVE_FILE_ID_PLAN", "")
+    # --- KONTEKST (BELOW) ---
+    role_label = st.sidebar.selectbox(
+        "Rola",
+        options=["GM (analityk)", "INV (inwestor)"],
+        index=0 if st.session_state["role"] == "GM" else 1,
+    )
+    st.session_state["role"] = "INV" if role_label.startswith("INV") else "GM"
+    is_inv = st.session_state["role"] == "INV"
 
-try:
-    drive_file_id = resolve_drive_id(raw_drive_id)
-except Exception as e:
-    drive_file_id = ""
-    st.sidebar.error(f"ID pliku jest niepoprawne: {e}")
+    year = int(
+        st.sidebar.number_input(
+            "Rok", min_value=2000, max_value=2100, value=int(st.session_state["year"]), step=1
+        )
+    )
+    st.session_state["year"] = year
 
-with st.sidebar.expander("Diagnostyka Drive", expanded=False):
-    st.write("Sekret RAW:", repr(raw_drive_id))
-    st.write("Wyłuskane ID:", repr(drive_file_id) if drive_file_id else "— brak —")
+    month = int(
+        st.sidebar.selectbox(
+            "Miesiąc",
+            options=list(range(1, 13)),
+            index=(int(st.session_state["month"]) - 1),
+            format_func=lambda m: f"{MONTHS_PL[m-1]} ({m:02d})",
+        )
+    )
+    st.session_state["month"] = month
 
-btn_login  = st.sidebar.button("Zaloguj (wczytaj z chmury)", use_container_width=True, disabled=not bool(drive_file_id))
-btn_save   = st.sidebar.button("Zapisz do chmury", use_container_width=True, disabled=not bool(drive_file_id))
-btn_logout = st.sidebar.button("Wyloguj (zapisz i wyczyść)", use_container_width=True)
+    st.sidebar.caption("Dane żyją w sesji. Eksport do XLSX wykonasz w zakładce Wykonanie.")
 
-# --------------------------------------------------------------------
-# WĘZEŁ INICJALIZACJI SESJI
-# --------------------------------------------------------------------
-if btn_login and drive_file_id:
-    try:
-        cloud_book = download_excel_from_drive(drive_file_id)
-        init_session(st, data_book=cloud_book, project_sheets=project_sheets)
-        st.session_state["data_book"] = cloud_book
-        st.sidebar.success("Dane z chmury wczytane.")
-    except Exception as e:
-        st.sidebar.error(f"Błąd pobierania z Google Drive: {e}")
+    return nav, is_inv, year, month
 
-# Jeżeli jeszcze nie zalogowano, zainicjuj pustą sesję (starter)
-if "insights" not in st.session_state:
-    init_session(st, data_book={}, project_sheets=project_sheets)
 
-# Mapowanie nazw arkuszy -> ID zakładek (PL: Rooms -> Pokoje itd.)
-book = st.session_state.get("data_book", {})
-st.session_state["sheets_map"] = {
-    "PLAN":       resolve_sheet_name(book, "PLAN")       or "Plan",
-    "WYKONANIE":  resolve_sheet_name(book, "WYKONANIE")  or "Wykonanie",
-    "ROOMS":      resolve_sheet_name(book, "ROOMS")      or "Pokoje",
-    "FNB":        resolve_sheet_name(book, "FNB")        or "Gastronomia",
-    "OPEX":       resolve_sheet_name(book, "OPEX")       or "OPEX",
-}
+# ==== Pasek nagłówka z kontekstem + skróty miesiąc -/+ ====
+def _header(nav: str, is_inv: bool, year: int, month: int) -> None:
+    col1, col2, col3 = st.columns([6, 1, 1])
+    with col1:
+        st.markdown(
+            f"### {nav}  ·  Rola: **{'INV' if is_inv else 'GM'}**  ·  "
+            f"Rok: **{year}**  ·  Miesiąc: **{MONTHS_PL[month-1]} ({month:02d})**"
+        )
+    with col2:
+        if st.button("◀︎", help="Poprzedni miesiąc"):
+            new_m = month - 1
+            new_y = year
+            if new_m < 1:
+                new_m = 12
+                new_y -= 1
+            st.session_state["month"] = new_m
+            st.session_state["year"] = new_y
+            st.rerun()
+    with col3:
+        if st.button("▶︎", help="Następny miesiąc"):
+            new_m = month + 1
+            new_y = year
+            if new_m > 12:
+                new_m = 1
+                new_y += 1
+            st.session_state["month"] = new_m
+            st.session_state["year"] = new_y
+            st.rerun()
 
-# --------------------------------------------------------------------
-# NAWIGACJA (etykiety po polsku)
-# --------------------------------------------------------------------
-pages_ids = build_pages(role, project_sheets.get("Zakładki"), st.session_state["project_config"])
-page = st.sidebar.radio("Nawigacja", pages_ids, format_func=lambda pid: PAGE_LABELS_PL.get(pid, pid))
-readonly = (role == "INV")
 
-# --------------------------------------------------------------------
-# ROUTER STRON
-# --------------------------------------------------------------------
-if page == "DASH_GM":
-    _safe_render(dashboard_gm, readonly=False)
-elif page == "PLAN":
-    _safe_render(plan, readonly=readonly)
-elif page == "WYKONANIE":
-    _safe_render(wykonanie, readonly=readonly)
-elif page == "ROOMS":
-    _safe_render(rooms)
-elif page == "FNB":
-    _safe_render(fnb)
-elif page == "OPEX":
-    _safe_render(opex, readonly=readonly)
-elif page == "RAPORTY":
-    _safe_render(raporty)
-elif page == "COVENANTS":
-    _safe_render(covenants)
-elif page == "TASKS":
-    _safe_render(tasks)
-elif page == "SETTINGS":
-    _safe_render(settings, role=role, pages_ids=pages_ids)
-else:
-    st.info("Zakładka w przygotowaniu.")
-
-# --------------------------------------------------------------------
-# ZAPIS / WYLOGOWANIE
-# --------------------------------------------------------------------
-if btn_save and drive_file_id:
-    frames = _frames_for_save()
-    if not frames:
-        st.sidebar.warning("Brak danych do zapisu (Plan/Wykonanie).")
-    else:
+# ==== Router stron ====
+def _route(nav: str, is_inv: bool, year: int, month: int) -> None:
+    if nav == "Pulpit GM":
+        _safe_render(dashboard_gm, year=year, month=month, readonly=is_inv)
+    elif nav == "Plan":
+        _safe_render(plan, year=year, month=month, readonly=is_inv)
+    elif nav == "Wykonanie":
+        # Strona Wykonanie działa lokalnie na session_state i pozwala eksport do XLSX.
         try:
-            upload_excel_to_drive(drive_file_id, frames)
-            st.sidebar.success("Zapisano na Google Drive.")
-        except Exception as e:
-            st.sidebar.error(f"Nie udało się zapisać: {e}")
+            _safe_render(wykonanie, readonly=is_inv)
+        except TypeError:
+            _safe_render(wykonanie)
+    elif nav == "Raporty":
+        _safe_render(raporty, year=year, month=month, readonly=is_inv)
+    else:
+        st.info("Zakładka w przygotowaniu.")
 
-if btn_logout:
-    # jeśli mamy ID – spróbuj zapisać
-    try:
-        if drive_file_id:
-            frames = _frames_for_save()
-            if frames:
-                upload_excel_to_drive(drive_file_id, frames)
-    finally:
-        st.session_state.clear()
-        st.experimental_rerun()
+
+# ==== Wejście aplikacji ====
+def main() -> None:
+    st.set_page_config(page_title="Analiza hotelowa – tryb lokalny", layout="wide")
+
+    # Inicjalizacja domyślnego stanu (bez żadnego wczytywania zewnętrznego)
+    _ensure_defaults()
+
+    # Sidebar (Nawigacja na górze, niżej Rola/Rok/Miesiąc)
+    nav, is_inv, year, month = _sidebar_context_and_nav()
+
+    # Nagłówek z kontekstem + skróty zmiany miesiąca
+    _header(nav, is_inv, year, month)
+
+    # Render wybranej strony
+    _route(nav, is_inv, year, month)
+
+
+if __name__ == "__main__":
+    main()
