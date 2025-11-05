@@ -22,8 +22,6 @@ from core.state_local import (
 )
 
 MONTHS_PL = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"]
-
-# Minimalny zestaw „wymaganych” pól dla grupy Pokoje (fallback)
 REQUIRED_COLS_DEFAULT = [
     "pokoje_do_sprzedania","sprzedane_pokoje_bez",
     "sprzedane_pokoje_ze","przychody_pokoje_netto",
@@ -31,48 +29,45 @@ REQUIRED_COLS_DEFAULT = [
 
 
 def render(readonly: bool = False) -> None:
+    # — Context —
     role  = st.session_state.get("role", "GM")
     year  = int(st.session_state.get("year", 2025))
     month = int(st.session_state.get("month", 1))
     is_inv = readonly or (role == "INV")
-
     init_exec_year(year)
 
-    # ——— Nagłówek + strzałki miesiąca ———
+    # — Header + month nav —
     c1, c2, c3 = st.columns([7, 1, 1])
     with c1:
         st.header("Wykonanie – dziennik i podsumowania")
     with c2:
-        if st.button("◀︎", key=f"wyk_prev_{year}_{month}", help="Poprzedni miesiąc"):
-            m, y = month - 1, year
-            if m < 1: m, y = 12, year - 1
+        if st.button("◀︎", key=f"wyk_prev_{year}_{month}"):
+            m, y = (12, year - 1) if month == 1 else (month - 1, year)
             st.session_state["month"], st.session_state["year"] = m, y
             st.rerun()
     with c3:
-        if st.button("▶︎", key=f"wyk_next_{year}_{month}", help="Następny miesiąc"):
-            m, y = month + 1, year
-            if m > 12: m, y = 1, year + 1
+        if st.button("▶︎", key=f"wyk_next_{year}_{month}"):
+            m, y = (1, year + 1) if month == 12 else (month + 1, year)
             st.session_state["month"], st.session_state["year"] = m, y
             st.rerun()
 
     st.subheader(f"Edycja danych – {MONTHS_PL[month-1].capitalize()} {year}")
 
+    # — Data —
     df_full = get_month_df(year, month)
     df_edit, df_future = split_editable(df_full)
 
-    # —— Dynamiczna mapa grup na podstawie istniejących kolumn ——
+    # — Dynamic group map —
     groups = _detect_groups(df_edit)
-    # fallback dla „Wszystkie” – użyjemy domyślnych metryk, jeśli ktoś włączy „tylko braki”
-    groups["Wszystkie"] = list(df_edit.columns.drop(labels=["data"], errors="ignore"))
+    groups["Wszystkie"] = [c for c in df_edit.columns if c != "data"]
 
-    # ——— Filtry szybkie nad pierwszą tabelą ———
+    # — Quick filters —
     fc1, fc2 = st.columns([2, 3])
     with fc1:
         only_missing = st.checkbox(
             "Pokaż tylko wiersze nieuzupełnione",
             value=False,
             key=f"only_missing_{year}_{month}",
-            help="Pokazuje tylko dni z brakami (NaN lub 0) w wybranej grupie kolumn.",
         )
     with fc2:
         group = st.selectbox(
@@ -85,14 +80,13 @@ def render(readonly: bool = False) -> None:
     group_cols = [c for c in groups.get(group, []) if c in df_edit.columns]
     subset_cols_for_style = group_cols or [c for c in REQUIRED_COLS_DEFAULT if c in df_edit.columns]
 
-    # Jeśli włączony filtr „tylko braki” — budujemy widok zawężony do wierszy z brakami
     if only_missing:
         base_cols = group_cols or subset_cols_for_style
         view_df = _filter_missing_rows(df_edit, base_cols)
     else:
         view_df = df_edit
 
-    # ——— Dni do dziś ———
+    # — Editable days (to today) —
     st.markdown("#### Dni do dziś")
     if is_inv:
         st.info("Tryb podglądu – edycja wyłączona (INV).")
@@ -106,34 +100,32 @@ def render(readonly: bool = False) -> None:
             if c != "data":
                 cfg[c] = st.column_config.NumberColumn(c, step=1.0, format="%.2f")
 
+        # 👇 klucz zależny od filtrów → brak kolizji cache
+        editor_key = f"editor_{year}_{month}_{_group_key(group)}_{int(only_missing)}"
         edited_view = st.data_editor(
             view_df,
             column_config=cfg,
             num_rows="fixed",
             width="stretch",
             hide_index=True,
-            key=f"editor_{year}_{month}",
+            key=editor_key,
         )
 
         left, right = st.columns([1, 3])
         with left:
-            who = st.text_input("Kto zapisuje?", value="GM", help="Imię / skrót do logu zmian.")
+            who = st.text_input("Kto zapisuje?", value="GM")
             if st.button("Zapisz w sesji", type="primary", key=f"save_{year}_{month}"):
-                merged_edit = _merge_back(df_edit, edited_view)  # scalenie subsetu do pełnego miesiąca
+                merged_edit = _merge_back(df_edit, edited_view)
                 new_full = pd.concat([merged_edit, df_future], ignore_index=True)
                 changes = save_month_df(year, month, new_full, user=who)
-                if changes.empty:
-                    st.info("Brak zmian.")
-                else:
-                    st.success(f"Zapisano {len(changes)} zmian.")
-                    st.session_state[f"last_changes_{year}_{month}"] = changes
+                st.success(f"Zapisano {len(changes)} zmian.") if not changes.empty else st.info("Brak zmian.")
+                st.session_state[f"last_changes_{year}_{month}"] = changes
 
         with right:
             st.markdown("**Podgląd braków (na czerwono)**")
             st.dataframe(
                 _style_missing(edited_view, subset_cols=subset_cols_for_style),
-                width="stretch",
-                hide_index=True,
+                width="stretch", hide_index=True,
             )
 
             changes = st.session_state.get(f"last_changes_{year}_{month}")
@@ -156,27 +148,25 @@ def render(readonly: bool = False) -> None:
 
         all_now = pd.concat([_merge_back(df_edit, edited_view), df_future], ignore_index=True)
 
-    # —— Dni przyszłe (podgląd) ——
+    # — Future days —
     if not df_future.empty:
         st.markdown("#### Dni przyszłe (podgląd)")
         st.dataframe(df_future, width="stretch", hide_index=True)
 
-    # —— Audit log ——
+    # — Audit —
     st.subheader("Historia zmian (audit log)")
     audit = get_audit(year, month)
-    if audit.empty:
-        st.write("Brak zmian w tym miesiącu.")
-    else:
-        st.dataframe(audit.sort_values("czas", ascending=False), width="stretch", hide_index=True)
+    st.write("Brak zmian w tym miesiącu.") if audit.empty else st.dataframe(
+        audit.sort_values("czas", ascending=False), width="stretch", hide_index=True
+    )
 
-    # —— KPI ——
+    # — KPI —
     st.subheader("Podsumowania KPI")
     r_m = kpi_rooms_month(all_now)
     f_m = kpi_fnb_month(all_now)
     exec_state = st.session_state.get("exec", {})
     r_y = kpi_rooms_ytd(exec_state, year, month)
     f_y = kpi_fnb_ytd(exec_state, year, month)
-
     k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("Zdolność eksploatacyjna", f"{r_m['zdolnosc']:.0f}", delta=f"YTD {r_y['zdolnosc']:.0f}")
     k2.metric("Sprzedane pokojonoce", f"{r_m['sprzedane']:.0f}", delta=f"YTD {r_y['sprzedane']:.0f}")
@@ -184,13 +174,12 @@ def render(readonly: bool = False) -> None:
     k4.metric("RevPOR", f"{r_m['revpor']:.2f} zł", delta=f"YTD {r_y['revpor']:.2f} zł")
     k5.metric("Koszty wydziałowe", f"{r_m['k_wydzialowe']:.2f} zł", delta=f"YTD {r_y['k_wydzialowe']:.2f} zł")
     k6.metric("Wynik (Pokoje)", f"{r_m['wynik']:.2f} zł", delta=f"YTD {r_y['wynik']:.2f} zł")
-
     g1, g2, g3 = st.columns(3)
     g1.metric("Sprzedaż gastronomii", f"{f_m['sprzedaz_fnb']:.2f} zł", delta=f"YTD {f_y['sprzedaz_fnb']:.2f} zł")
     g2.metric("Koszty F&B", f"{f_m['g_k_razem']:.2f} zł", delta=f"YTD {f_y['g_k_razem']:.2f} zł")
     g3.metric("Wynik F&B", f"{f_m['g_wynik']:.2f} zł", delta=f"YTD {f_y['g_wynik']:.2f} zł")
 
-    # —— Eksport XLSX ——
+    # — Export —
     st.subheader("Eksport do Excela")
     if st.button("Eksportuj wszystkie lata/miesiące do XLSX", type="secondary", key="export_all_xlsx"):
         try:
@@ -216,15 +205,11 @@ def render(readonly: bool = False) -> None:
 
 # ===================== helpers =====================
 
+def _group_key(group: str) -> str:
+    return group.lower().replace(" ", "_").replace("ł", "l").replace("ś", "s").replace("ż", "z").replace("ź", "z").replace("ą","a").replace("ę","e").replace("ó","o").replace("ń","n").replace("ć","c")
+
+
 def _detect_groups(df: pd.DataFrame) -> Dict[str, List[str]]:
-    """
-    Dynamicznie buduje grupy kolumn:
-    - Pokoje: prefiksy pokoje_, sprzedane_pokoje_, przychody_pokoje_
-    - Gastronomia: prefiks fnb_ (poza fnb_wynajem_sali → Dział Sprzedaży)
-    - Dział Sprzedaży: fnb_wynajem_sali
-    - Inne Centra: przychody_* (poza przychody_pokoje_ i fnb_*), proc_pokoi_parking
-    - Koszty: prefiks r_ lub g_
-    """
     cols = set(df.columns) - {"data"}
     pokoje = [c for c in cols if c.startswith(("pokoje_", "sprzedane_pokoje_", "przychody_pokoje_"))]
     dzial = [c for c in cols if c == "fnb_wynajem_sali"]
@@ -241,22 +226,18 @@ def _detect_groups(df: pd.DataFrame) -> Dict[str, List[str]]:
 
 
 def _filter_missing_rows(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:
-    """Zwraca tylko te wiersze, gdzie w dowolnej z `cols` jest NaN lub 0."""
     cols = [c for c in cols if c in df.columns]
     if not cols:
         return df
+    # NaN lub 0 po konwersji numerycznej
     miss = df[cols].isna()
-    with pd.option_context("mode.use_inf_as_na", True):
-        try:
-            miss |= df[cols].astype(float).eq(0.0)
-        except Exception:
-            pass
+    num = df[cols].apply(pd.to_numeric, errors="coerce")
+    miss |= num.eq(0.0)
     mask = miss.any(axis=1)
     return df.loc[mask].reset_index(drop=True)
 
 
 def _merge_back(original: pd.DataFrame, edited_view: pd.DataFrame) -> pd.DataFrame:
-    """Wstrzykuje edytowany subset (po 'data') do pełnego df_edit."""
     if edited_view.empty:
         return original.copy()
     base = original.set_index("data")
@@ -267,24 +248,19 @@ def _merge_back(original: pd.DataFrame, edited_view: pd.DataFrame) -> pd.DataFra
 
 
 def _style_missing(df_like: pd.DataFrame, *, subset_cols: Optional[Iterable[str]] = None) -> pd.io.formats.style.Styler:
-    """Czerwone podświetlenie braków (NaN lub 0) w wskazanym podzbiorze kolumn."""
     df = df_like.copy()
     today = pd.to_datetime(date.today())
     if "data" in df.columns:
         df = df[df["data"] <= today]
-
     cols = [c for c in (subset_cols or REQUIRED_COLS_DEFAULT) if c in df.columns]
     if not cols:
         return df.style
 
     def style_subset(subdf: pd.DataFrame) -> pd.DataFrame:
-        mask = subdf.isna()
-        with pd.option_context("mode.use_inf_as_na", True):
-            try:
-                mask |= subdf.astype(float).eq(0.0)
-            except Exception:
-                pass
-        return mask.replace({True: "background-color: #ffdddd", False: ""})
+        miss = subdf.isna()
+        num = subdf.apply(pd.to_numeric, errors="coerce")
+        miss |= num.eq(0.0)
+        return miss.replace({True: "background-color: #ffdddd", False: ""})
 
     return df.style.apply(style_subset, axis=None, subset=cols)
 
