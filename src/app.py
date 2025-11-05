@@ -61,14 +61,14 @@ def _safe_render(mod: Any, **kwargs) -> None:
 def _sidebar_context_and_nav() -> tuple[str, bool, int, int]:
     """
     Renderuje wyłącznie:
-      - tytuł 'Analiza hinansowa hotelu'
+      - tytuł 'Analiza finansowa hotelu'
       - Rola / Rok / Miesiąc
     ŻADNEJ nawigacji (radio) nad/obok tytułu.
     """
     _ensure_defaults()
 
     # Tytuł
-    st.sidebar.title("Finansowy Hotele")
+    st.sidebar.title("Analiza finansowa hotelu")
 
     # --- poniżej tytułu: KONTEKST (rola/rok/miesiąc) ---
     role_label = st.sidebar.selectbox(
@@ -144,10 +144,21 @@ def _route(nav: str, is_inv: bool, year: int, month: int) -> None:
 # ---------------------------------------------------------------------
 def main() -> None:
     st.set_page_config(page_title="Analiza hotelowa", layout="wide")
+
+    # --- schowaj tylko pozycję "app" w automatycznym menu stron ---
+    st.markdown("""
+    <style>
+    /* 1) precyzyjnie po aria-label (nowsze wersje Streamlit) */
+    section[data-testid="stSidebarNav"] li:has(a[aria-label="app"]) { display: none !important; }
+    section[data-testid="stSidebarNav"] li:has(a[aria-label="App"]) { display: none !important; }
+
+    /* 2) fallback – jeśli :has nie działa, ukryj pierwszy element listy (u Ciebie to "app") */
+    section[data-testid="stSidebarNav"] ul li:first-child { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
+    # --- koniec wstawki ---
+
     _ensure_defaults()
     nav, is_inv, year, month = _sidebar_context_and_nav()
+    # Nie rysujemy tu nagłówków – każdy moduł sam odpowiada za swój tytuł
     _route(nav, is_inv, year, month)
-
-
-if __name__ == "__main__":
-    main()
