@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import os
+from datetime import date
 import pandas as pd
 import streamlit as st
 
@@ -19,10 +20,16 @@ from core.state_local import (
 )
 
 MONTHS_PL = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"]
+# Kluczowe pola, które traktujemy jako „wymagane” dla dnia
+REQUIRED_COLS = [
+    "pokoje_do_sprzedania",
+    "sprzedane_pokoje_bez",
+    "sprzedane_pokoje_ze",
+    "przychody_pokoje_netto",
+]
 
 
 def render(readonly: bool = False) -> None:
-    """Widok Wykonania – pracuje tylko na session_state; eksport do XLSX z pamięci."""
     role  = st.session_state.get("role", "GM")
     year  = int(st.session_state.get("year", 2025))
     month = int(st.session_state.get("month", 1))
@@ -30,7 +37,7 @@ def render(readonly: bool = False) -> None:
 
     init_exec_year(year)
 
-    # Nagłówek + strzałki miesiąca (bez dopisków w nawiasach)
+    # Tytuł + strzałki miesiąca
     c1, c2, c3 = st.columns([7, 1, 1])
     with c1:
         st.header("Wykonanie – dziennik i podsumowania")
@@ -54,12 +61,15 @@ def render(readonly: bool = False) -> None:
     df_full = get_month_df(year, month)
     df_edit, df_future = split_editable(df_full)
 
+    # ===== Dni do dziś =====
     st.markdown("#### Dni do dziś")
     if is_inv:
+        # INV – widok tylko do odczytu, od razu z podświetleniem braków
         st.info("Tryb podglądu – edycja wyłączona (INV).")
-        st.dataframe(df_edit, width="stretch", hide_index=True)
+        st.dataframe(_style_missing(df_edit), width="stretch", hide_index=True)
         all_now = pd.concat([df_edit, df_future], ignore_index=True)
     else:
+        # GM – edytor
         cfg = {"data": st.column_config.DateColumn("Data")}
         for c in df_edit.columns:
             if c != "data":
@@ -87,13 +97,9 @@ def render(readonly: bool = False) -> None:
                     st.session_state[f"last_changes_{year}_{month}"] = changes
 
         with right:
-            all_now = pd.concat([edited, df_future], ignore_index=True)
-            missing = list(
-                all_now.loc[all_now["przychody_pokoje_netto"] <= 0.0, "data"]
-                .dt.strftime("%Y-%m-%d")
-            )
-            if missing:
-                st.warning(f"Brakuje danych (sprzedaż pokoi) dla dni: {', '.join(missing)}")
+            # Zamiast komunikatu o brakach – podświetlenie braków
+            st.markdown("**Podgląd braków (na czerwono)**")
+            st.dataframe(_style_missing(edited), width="stretch", hide_index=True)
 
             changes = st.session_state.get(f"last_changes_{year}_{month}")
             if changes is not None and not changes.empty:
@@ -102,7 +108,7 @@ def render(readonly: bool = False) -> None:
 
                 st.subheader("Podgląd po zapisie (zmienione na żółto)")
                 before = df_full.set_index("data").sort_index()
-                after = all_now.set_index("data").sort_index()
+                after = pd.concat([edited, df_future], ignore_index=True).set_index("data").sort_index()
                 before, after = before.align(after, join="outer", axis=0)
                 cols = [c for c in after.columns if c in before.columns and c != "data"]
                 mask = after[cols] != before[cols]
@@ -113,20 +119,22 @@ def render(readonly: bool = False) -> None:
                 )
                 st.dataframe(styled, width="stretch", hide_index=True)
 
+        all_now = pd.concat([edited, df_future], ignore_index=True)
+
+    # ===== Dni przyszłe =====
     if not df_future.empty:
         st.markdown("#### Dni przyszłe (podgląd)")
         st.dataframe(df_future, width="stretch", hide_index=True)
 
+    # ===== Audit log =====
     st.subheader("Historia zmian (audit log)")
     audit = get_audit(year, month)
     if audit.empty:
         st.write("Brak zmian w tym miesiącu.")
     else:
-        st.dataframe(
-            audit.sort_values("czas", ascending=False), width="stretch", hide_index=True
-        )
+        st.dataframe(audit.sort_values("czas", ascending=False), width="stretch", hide_index=True)
 
-    # KPI
+    # ===== KPI =====
     st.subheader("Podsumowania KPI")
     r_m = kpi_rooms_month(all_now)
     f_m = kpi_fnb_month(all_now)
@@ -147,7 +155,7 @@ def render(readonly: bool = False) -> None:
     g2.metric("Koszty F&B", f"{f_m['g_k_razem']:.2f} zł", delta=f"YTD {f_y['g_k_razem']:.2f} zł")
     g3.metric("Wynik F&B", f"{f_m['g_wynik']:.2f} zł", delta=f"YTD {f_y['g_wynik']:.2f} zł")
 
-    # Eksport (in-memory + opcjonalny zapis na dysk)
+    # ===== Eksport =====
     st.subheader("Eksport do Excela")
     if st.button("Eksportuj wszystkie lata/miesiące do XLSX", type="secondary", key="export_all_xlsx"):
         try:
@@ -160,20 +168,41 @@ def render(readonly: bool = False) -> None:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="export_download_btn",
             )
-            # opcjonalny zapis lokalny (bez błędu gdy brak katalogu)
             try:
                 os.makedirs("/mnt/data", exist_ok=True)
                 with open("/mnt/data/wykonanie_export.xlsx", "wb") as f:
                     f.write(buffer.getvalue())
                 st.caption("Zapisano również: /mnt/data/wykonanie_export.xlsx")
             except Exception:
-                pass  # tylko best effort
+                pass
         except Exception as e:
             st.error(f"Nie udało się wyeksportować: {e}")
 
 
+def _style_missing(df_edit: pd.DataFrame) -> pd.io.formats.style.Styler:
+    """Zwraca Styler z czerwonym podświetleniem braków w wymaganych kolumnach."""
+    df = df_edit.copy()
+    # Tylko dni do dziś – df_edit już je reprezentuje, ale utnij na wszelki
+    today = pd.to_datetime(date.today())
+    if "data" in df.columns:
+        df = df[df["data"] <= today]
+
+    cols = [c for c in REQUIRED_COLS if c in df.columns]
+    if not cols:
+        return df.style  # nic do stylowania
+
+    def _mask(_df: pd.DataFrame) -> pd.DataFrame:
+        m = pd.DataFrame(False, index=_df.index, columns=_df.columns)
+        for c in cols:
+            # brak = NaN lub == 0
+            m[c] = _df[c].isna() | (_df[c].astype(float) == 0.0)
+        return m
+
+    mask = _mask(df)
+    return df.style.apply(lambda _: mask.replace({True: "background-color: #ffdddd", False: ""}), axis=None, subset=cols)
+
+
 def _export_all_to_excel_bytes() -> io.BytesIO:
-    """Buduje workbook XLSX w pamięci z całego stanu st.session_state['exec']."""
     exec_state = st.session_state.get("exec", {})
     if not exec_state:
         raise RuntimeError("Brak danych w sesji do eksportu.")
