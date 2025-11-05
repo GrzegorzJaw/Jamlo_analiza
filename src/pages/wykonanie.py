@@ -12,7 +12,6 @@ from core.state_local import (
     save_month_df,
     get_audit,
     split_editable,
-    # KPI helpers
     kpi_rooms_month,
     kpi_rooms_ytd,
     kpi_fnb_month,
@@ -58,7 +57,7 @@ def render(readonly: bool = False) -> None:
     st.markdown("#### Dni do dziś")
     if is_inv:
         st.info("Tryb podglądu – edycja wyłączona (INV).")
-        st.dataframe(df_edit, use_container_width=True, hide_index=True)
+        st.dataframe(df_edit, width="stretch", hide_index=True)
         all_now = pd.concat([df_edit, df_future], ignore_index=True)
     else:
         cfg = {"data": st.column_config.DateColumn("Data")}
@@ -70,7 +69,7 @@ def render(readonly: bool = False) -> None:
             df_edit,
             column_config=cfg,
             num_rows="fixed",
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             key=f"editor_{year}_{month}",
         )
@@ -99,7 +98,7 @@ def render(readonly: bool = False) -> None:
             changes = st.session_state.get(f"last_changes_{year}_{month}")
             if changes is not None and not changes.empty:
                 st.subheader("Zmiany (ostatni zapis)")
-                st.dataframe(changes, use_container_width=True, hide_index=True)
+                st.dataframe(changes, width="stretch", hide_index=True)
 
                 st.subheader("Podgląd po zapisie (zmienione na żółto)")
                 before = df_full.set_index("data").sort_index()
@@ -112,11 +111,11 @@ def render(readonly: bool = False) -> None:
                     axis=None,
                     subset=cols,
                 )
-                st.dataframe(styled, use_container_width=True, hide_index=True)
+                st.dataframe(styled, width="stretch", hide_index=True)
 
     if not df_future.empty:
         st.markdown("#### Dni przyszłe (podgląd)")
-        st.dataframe(df_future, use_container_width=True, hide_index=True)
+        st.dataframe(df_future, width="stretch", hide_index=True)
 
     st.subheader("Historia zmian (audit log)")
     audit = get_audit(year, month)
@@ -124,7 +123,7 @@ def render(readonly: bool = False) -> None:
         st.write("Brak zmian w tym miesiącu.")
     else:
         st.dataframe(
-            audit.sort_values("czas", ascending=False), use_container_width=True, hide_index=True
+            audit.sort_values("czas", ascending=False), width="stretch", hide_index=True
         )
 
     # KPI
