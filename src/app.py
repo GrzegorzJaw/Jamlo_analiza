@@ -2,38 +2,44 @@
 # file: app.py
 # ===============================
 from __future__ import annotations
+
 from typing import Any, Callable, Optional
+
 import streamlit as st
 
-# Tryb lokalny (bez Drive)
-LOCAL_ONLY = True
-
-# Import stron bez twardych zależności
+# --- Strony ładowane leniwie (bez twardych zależności) ---
 def _try_import(path: str) -> Optional[Any]:
     try:
         return __import__(path, fromlist=["render"])
     except Exception:
         return None
 
+
 dashboard_gm = _try_import("pages.dashboard_gm")
-plan         = _try_import("pages.plan")
-wykonanie    = _try_import("pages.wykonanie")
-raporty      = _try_import("pages.raporty")
+plan = _try_import("pages.plan")
+wykonanie = _try_import("pages.wykonanie")
+raporty = _try_import("pages.raporty")
 
-MONTHS_PL = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"]
+# --- Stan lokalny: inicjalizacja roku i migracja schematu kolumn ---
+from core.state_local import init_exec_year, migrate_to_new_schema
 
-# ---- Session defaults ----
+MONTHS_PL = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"]
+
+
+# ---------------------------------------------------------------------
+# Session defaults
+# ---------------------------------------------------------------------
 def _ensure_defaults() -> None:
     s = st.session_state
     s.setdefault("nav", "Wykonanie")
-    s.setdefault("role", "GM")     # GM = analityk, INV = inwestor
+    s.setdefault("role", "GM")  # GM = analityk, INV = inwestor
     s.setdefault("year", 2025)
     s.setdefault("month", 1)
-    s.setdefault("insights", {})
-    s.setdefault("data_book", {})
-    s.setdefault("project_sheets", {})
 
-# ---- Safe render (różne sygnatury) ----
+
+# ---------------------------------------------------------------------
+# Safe render (różne sygnatury)
+# ---------------------------------------------------------------------
 def _safe_render(mod: Any, **kwargs) -> None:
     if mod is None:
         st.info("Moduł strony jest obecnie niedostępny.")
@@ -45,10 +51,18 @@ def _safe_render(mod: Any, **kwargs) -> None:
     try:
         render(**kwargs)
     except TypeError:
+        # kompatybilność wsteczna (stare strony bez parametrów)
         render()
 
-# ---- Sidebar: NAWIGACJA (top) + KONTEKST (below) ----
+
+# ---------------------------------------------------------------------
+# Sidebar: NAWIGACJA (top) + KONTEKST (below)
+# ---------------------------------------------------------------------
 def _sidebar_context_and_nav() -> tuple[str, bool, int, int]:
+    """
+    Jeden zestaw kontrolek globalnych.
+    Dlaczego: unikamy duplikatów elementów (StreamlitDuplicateElementId).
+    """
     _ensure_defaults()
 
     st.sidebar.title("Finansowy Hotele")
@@ -64,7 +78,7 @@ def _sidebar_context_and_nav() -> tuple[str, bool, int, int]:
 
     st.sidebar.markdown("---")
 
-    # KONTEKST (rola/rok/miesiąc) – JEDYNY zestaw kontrolek
+    # KONTEKST (rola/rok/miesiąc)
     role_label = st.sidebar.selectbox(
         "Rola",
         options=["GM (analityk)", "INV (inwestor)"],
@@ -76,7 +90,12 @@ def _sidebar_context_and_nav() -> tuple[str, bool, int, int]:
 
     year = int(
         st.sidebar.number_input(
-            "Rok", min_value=2000, max_value=2100, value=int(st.session_state["year"]), step=1, key="year_input"
+            "Rok",
+            min_value=2000,
+            max_value=2100,
+            value=int(st.session_state["year"]),
+            step=1,
+            key="year_input",
         )
     )
     st.session_state["year"] = year
@@ -92,18 +111,30 @@ def _sidebar_context_and_nav() -> tuple[str, bool, int, int]:
     )
     st.session_state["month"] = month
 
-    st.sidebar.caption("Dane żyją w sesji. Eksport do XLSX wykonasz w zakładce Wykonanie.")
+    st.sidebar.caption("Dane żyją lokalnie w sesji. Eksport do XLSX wykonasz w zakładce „Wykonanie”.")
     return nav, is_inv, year, month
 
-# ---- Router ----
+
+# ---------------------------------------------------------------------
+# Router
+# ---------------------------------------------------------------------
 def _route(nav: str, is_inv: bool, year: int, month: int) -> None:
+    """
+    Centralny przełącznik stron.
+    Ważne: każdorazowo dbamy o spójność danych (init + migracja).
+    """
+    # Utrzymanie spójności schematu (nowe nazwy kolumn) i gotowych miesięcy
+    init_exec_year(year)
+    migrate_to_new_schema()
+
     if nav == "Pulpit GM":
         _safe_render(dashboard_gm, year=year, month=month, readonly=is_inv)
     elif nav == "Plan":
         _safe_render(plan, year=year, month=month, readonly=is_inv)
     elif nav == "Wykonanie":
+        # strona sama rysuje nagłówek i strzałki miesięcy
         try:
-            _safe_render(wykonanie, readonly=is_inv)  # strona sama wyświetli tytuł + strzałki
+            _safe_render(wykonanie, readonly=is_inv)
         except TypeError:
             _safe_render(wykonanie)
     elif nav == "Raporty":
@@ -111,13 +142,17 @@ def _route(nav: str, is_inv: bool, year: int, month: int) -> None:
     else:
         st.info("Zakładka w przygotowaniu.")
 
-# ---- Entry ----
+
+# ---------------------------------------------------------------------
+# Entry
+# ---------------------------------------------------------------------
 def main() -> None:
     st.set_page_config(page_title="Analiza hotelowa", layout="wide")
     _ensure_defaults()
     nav, is_inv, year, month = _sidebar_context_and_nav()
-    # Uwaga: NIE rysujemy żadnego nagłówka tutaj (żeby nie dublować tytułu na stronie)
+    # Nie rysujemy tu nagłówków – każdy moduł sam odpowiada za swój tytuł
     _route(nav, is_inv, year, month)
+
 
 if __name__ == "__main__":
     main()
