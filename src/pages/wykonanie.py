@@ -21,15 +21,184 @@ from core.state_local import (
     kpi_fnb_ytd,
 )
 
-MONTHS_PL = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"]
-REQUIRED_COLS_DEFAULT = [
-    "pokoje_do_sprzedania","sprzedane_pokoje_bez",
-    "sprzedane_pokoje_ze","przychody_pokoje_netto",
-]
+# ─────────────────────────────
+# 1) KONWENCJA NAZW (nowe klucze)
+# ─────────────────────────────
+COLMAP_OLD2NEW: Dict[str, str] = {
+    # POKOJE (sprzedaż / obłożenie)
+    "pokoje_do_sprzedania": "pokoje_dostepne_qty",
+    "pokoje_oos": "pokoje_oos_qty",
+    "sprzedane_pokoje_bez": "pokoje_sprzedane_bez_qty",
+    "sprzedane_pokoje_ze": "pokoje_sprzedane_ze_qty",
+    "przychody_pokoje_netto": "pokoje_przychod_netto_pln",
 
-# ---------- BRACKI: detekcja 0/NaN/''/'0,00' ----------
+    # F&B
+    "fnb_sniadania_pakietowe": "fnb_sniadania_pakietowe_pln",
+    "fnb_kolacje_pakietowe": "fnb_kolacje_pakietowe_pln",
+    "fnb_zywnosc_a_la_carte": "fnb_zywnosc_a_la_carte_pln",
+    "fnb_napoje_a_la_carte": "fnb_napoje_a_la_carte_pln",
+    "fnb_zywnosc_bankiety": "fnb_zywnosc_bankiety_pln",
+    "fnb_napoje_bankiety": "fnb_napoje_bankiety_pln",
+    "fnb_wynajem_sali": "sprzedaz_wynajem_sali_pln",     # → dział sprzedaży
+    "fnb_catering": "fnb_catering_pln",
+
+    # INNE CENTRA (przychody)
+    "proc_pokoi_parking": "inne_proc_pokoi_parking_pct",
+    "przychody_parking": "inne_parking_przychod_pln",
+    "przychody_sklep_recepcyjny": "inne_sklep_recepcja_przychod_pln",
+    "przychody_pralnia_gosci": "inne_pralnia_gosci_przychod_pln",
+    "przychody_transport_gosci": "inne_transport_przychod_pln",
+    "przychody_rekreacja": "inne_rekreacja_przychod_pln",
+    "przychody_pozostale": "inne_pozostale_przychod_pln",
+
+    # KOSZTY — POKOJE (prefix koszt_r_)
+    "r_osobowe_wynagrodzenia": "koszt_r_osobowe_wynagrodzenia_pln",
+    "r_osobowe_zus": "koszt_r_osobowe_zus_pln",
+    "r_osobowe_pfron": "koszt_r_osobowe_pfron_pln",
+    "r_osobowe_wyzywienie": "koszt_r_osobowe_wyzywienie_pln",
+    "r_osobowe_odziez_bhp": "koszt_r_osobowe_odziez_bhp_pln",
+    "r_osobowe_medyczne": "koszt_r_osobowe_medyczne_pln",
+    "r_osobowe_inne": "koszt_r_osobowe_inne_pln",
+
+    "r_materialy_eksploatacyjne_spozywcze": "koszt_r_materialy_eksplo_spozywcze_pln",
+    "r_materialy_kosmetyki_srodki": "koszt_r_materialy_kosmetyki_czystosc_pln",
+    "r_materialy_inne_biurowe": "koszt_r_materialy_inne_biurowe_pln",
+
+    "r_uslugi_sprzatania": "koszt_r_uslugi_sprzatanie_pln",
+    "r_uslugi_pranie_zew": "koszt_r_uslugi_pranie_zew_pln",
+    "r_uslugi_pranie_odziezy_sluzbowej": "koszt_r_uslugi_pranie_odziezy_pln",
+    "r_uslugi_wynajem_sprzetu": "koszt_r_uslugi_wynajem_sprzetu_pln",
+    "r_uslugi_inne_bhp": "koszt_r_uslugi_inne_pln",
+
+    "r_pozostale_prowizje_ota_gds": "koszt_r_prowizje_ota_gds_pln",
+
+    # KOSZTY — GASTRONOMIA (prefix koszt_g_)
+    "g_koszt_surowca_zywnosc_pln": "koszt_g_surowiec_zywnosc_pln",
+    "g_koszt_surowca_napoje_pln": "koszt_g_surowiec_napoje_pln",
+
+    "g_osobowe_wynagrodzenia": "koszt_g_osobowe_wynagrodzenia_pln",
+    "g_osobowe_zus": "koszt_g_osobowe_zus_pln",
+    "g_osobowe_pfron": "koszt_g_osobowe_pfron_pln",
+    "g_osobowe_wyzywienie": "koszt_g_osobowe_wyzywienie_pln",
+    "g_osobowe_odziez_bhp": "koszt_g_osobowe_odziez_bhp_pln",
+    "g_osobowe_medyczne": "koszt_g_osobowe_medyczne_pln",
+    "g_osobowe_inne": "koszt_g_osobowe_inne_pln",
+
+    "g_materialy_zastawa": "koszt_g_materialy_zastawa_pln",
+    "g_materialy_drobne_wyposazenie": "koszt_g_materialy_drobne_wypos_pln",
+    "g_materialy_bielizna_dekoracje": "koszt_g_materialy_bielizna_dekor_pln",
+    "g_materialy_karty_dan": "koszt_g_materialy_karty_dan_pln",
+    "g_materialy_srodki_czystosci": "koszt_g_materialy_srodki_czystosci_pln",
+    "g_materialy_inne": "koszt_g_materialy_inne_pln",
+
+    "g_uslugi_sprzatania_tapicerki": "koszt_g_uslugi_sprzatanie_pln",
+    "g_uslugi_pranie_odziezy_sluzbowej": "koszt_g_uslugi_pranie_odziezy_pln",
+    "g_uslugi_pranie_bielizny_gastro": "koszt_g_uslugi_pranie_bielizny_pln",
+    "g_uslugi_wynajem_sprzetu_lokali": "koszt_g_uslugi_wynajem_sprzetu_pln",
+    "g_uslugi_inne": "koszt_g_uslugi_inne_pln",
+}
+
+DISPLAY_LABELS: Dict[str, str] = {
+    # Pokoje
+    "pokoje_dostepne_qty": "🛏️ Pokoje do sprzedaży",
+    "pokoje_oos_qty": "🚫 Pokoje OOS",
+    "pokoje_sprzedane_bez_qty": "🛏️ Sprzedane BEZ śn.",
+    "pokoje_sprzedane_ze_qty": "🥐 Sprzedane ZE śn.",
+    "pokoje_przychod_netto_pln": "💰 Przychody pokoje (netto)",
+    # F&B
+    "fnb_sniadania_pakietowe_pln": "🥐 Śniadania pakietowe",
+    "fnb_kolacje_pakietowe_pln": "🍽️ Kolacje pakietowe",
+    "fnb_zywnosc_a_la_carte_pln": "🍲 Żywność a la carte",
+    "fnb_napoje_a_la_carte_pln": "🥤 Napoje a la carte",
+    "fnb_zywnosc_bankiety_pln": "🎉 Żywność bankiety",
+    "fnb_napoje_bankiety_pln": "🥂 Napoje bankiety",
+    "fnb_catering_pln": "🧺 Catering",
+    # Sprzedaż
+    "sprzedaz_wynajem_sali_pln": "🏢 Wynajem sal",
+    # Inne
+    "inne_proc_pokoi_parking_pct": "🅿️ % pokoi z parkingiem",
+    "inne_parking_przychod_pln": "🅿️ Przychody parking",
+    "inne_sklep_recepcja_przychod_pln": "🛒 Sklep recepcyjny",
+    "inne_pralnia_gosci_przychod_pln": "🧺 Pralnia (goście)",
+    "inne_transport_przychod_pln": "🚖 Transport (goście)",
+    "inne_rekreacja_przychod_pln": "🏊 Rekreacja",
+    "inne_pozostale_przychod_pln": "➕ Pozostałe przychody",
+    # Koszty — Pokoje
+    "koszt_r_osobowe_wynagrodzenia_pln": "👥 R: Wynagrodzenia",
+    "koszt_r_osobowe_zus_pln": "👥 R: ZUS",
+    "koszt_r_osobowe_pfron_pln": "👥 R: PFRON",
+    "koszt_r_osobowe_wyzywienie_pln": "👥 R: Wyżywienie",
+    "koszt_r_osobowe_odziez_bhp_pln": "👥 R: Odzież/BHP",
+    "koszt_r_osobowe_medyczne_pln": "👥 R: Usł. medyczne",
+    "koszt_r_osobowe_inne_pln": "👥 R: Inne osobowe",
+    "koszt_r_materialy_eksplo_spozywcze_pln": "📦 R: Mat. eksplo./spoż.",
+    "koszt_r_materialy_kosmetyki_czystosc_pln": "🧴 R: Kosmetyki/środ. cz.",
+    "koszt_r_materialy_inne_biurowe_pln": "🗂️ R: Inne/biurowe",
+    "koszt_r_uslugi_sprzatanie_pln": "🧹 R: Sprzątanie",
+    "koszt_r_uslugi_pranie_zew_pln": "🧼 R: Pranie (zew.)",
+    "koszt_r_uslugi_pranie_odziezy_pln": "👕 R: Pranie odzieży",
+    "koszt_r_uslugi_wynajem_sprzetu_pln": "🛠️ R: Wynajem sprzętu",
+    "koszt_r_uslugi_inne_pln": "📄 R: Inne usługi",
+    "koszt_r_prowizje_ota_gds_pln": "🌐 R: Prowizje OTA/GDS",
+    # Koszty — F&B
+    "koszt_g_surowiec_zywnosc_pln": "🍲 G: Surowiec żywność",
+    "koszt_g_surowiec_napoje_pln": "🥤 G: Surowiec napoje",
+    "koszt_g_osobowe_wynagrodzenia_pln": "👥 G: Wynagrodzenia",
+    "koszt_g_osobowe_zus_pln": "👥 G: ZUS",
+    "koszt_g_osobowe_pfron_pln": "👥 G: PFRON",
+    "koszt_g_osobowe_wyzywienie_pln": "👥 G: Wyżywienie",
+    "koszt_g_osobowe_odziez_bhp_pln": "👥 G: Odzież/BHP",
+    "koszt_g_osobowe_medyczne_pln": "👥 G: Usł. medyczne",
+    "koszt_g_osobowe_inne_pln": "👥 G: Inne osobowe",
+    "koszt_g_materialy_zastawa_pln": "🍽️ G: Zastawa/szkło",
+    "koszt_g_materialy_drobne_wypos_pln": "🧰 G: Drobne wyposaż.",
+    "koszt_g_materialy_bielizna_dekor_pln": "🧵 G: Bielizna/dekor.",
+    "koszt_g_materialy_karty_dan_pln": "🧾 G: Karty dań",
+    "koszt_g_materialy_srodki_czystosci_pln": "🧴 G: Środki czystości",
+    "koszt_g_materialy_inne_pln": "🗂️ G: Inne materiały",
+    "koszt_g_uslugi_sprzatanie_pln": "🧹 G: Sprzątanie",
+    "koszt_g_uslugi_pranie_odziezy_pln": "🧼 G: Pranie odzieży",
+    "koszt_g_uslugi_pranie_bielizny_pln": "🧺 G: Pranie bielizny",
+    "koszt_g_uslugi_wynajem_sprzetu_pln": "🛠️ G: Wynajem sprzętu",
+    "koszt_g_uslugi_inne_pln": "📄 G: Inne usługi",
+}
+
+MONTHS_PL = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"]
+REQUIRED_COLS_DEFAULT = ["pokoje_dostepne_qty","pokoje_sprzedane_bez_qty","pokoje_sprzedane_ze_qty","pokoje_przychod_netto_pln"]
+
+
+# ─────────────────────────────
+# 2) MIGRACJA DANYCH W SESJI
+# ─────────────────────────────
+def migrate_exec_session() -> None:
+    """Jednorazowo: przepina stare nazwy kolumn na nowe w całym st.session_state['exec']."""
+    exec_state = st.session_state.get("exec")
+    if not isinstance(exec_state, dict):
+        return
+    marker_key = "_migrated_cols_v1"
+    if st.session_state.get(marker_key):
+        return  # już migrowano
+
+    changed = 0
+    for y, months in list(exec_state.items()):
+        if not isinstance(months, dict):
+            continue
+        for m, df in list(months.items()):
+            if not isinstance(df, pd.DataFrame):
+                continue
+            ren_map = {old: new for old, new in COLMAP_OLD2NEW.items() if old in df.columns}
+            if ren_map:
+                exec_state[y][m] = df.rename(columns=ren_map)
+                changed += 1
+    st.session_state[marker_key] = True
+    if changed:
+        st.toast(f"Zastosowano migrację nazw kolumn w {changed} arkuszach.", icon="✅")
+
+
+# ─────────────────────────────
+# 3) POMOCNICZE: braki/filtry/styl
+# ─────────────────────────────
 def _to_numeric_series(s: pd.Series) -> pd.Series:
-    # normalizacja tekstów typu "1 234,56" → "1234.56"
     if s.dtype == object:
         s = s.astype(str).str.strip().replace({"": None, "None": None, "nan": None})
         s = s.str.replace(" ", "", regex=False).str.replace("\xa0", "", regex=False)
@@ -37,38 +206,28 @@ def _to_numeric_series(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
 
 def _is_missing_frame(df_sub: pd.DataFrame) -> pd.DataFrame:
-    # brak jeśli NaN lub == 0 po konwersji
     num = df_sub.apply(_to_numeric_series)
     miss = num.isna() | num.eq(0.0)
-    # dodatkowo puste stringi przed konwersją
     if any(df_sub.dtypes == object):
         empty = df_sub.astype(str).str.strip().eq("")
         miss = miss | empty
     return miss
 
-# ---------- GRUPY ----------
 def _detect_groups(df: pd.DataFrame) -> Dict[str, List[str]]:
     cols = set(df.columns) - {"data"}
-    pokoje = [c for c in cols if c.startswith(("pokoje_", "sprzedane_pokoje_", "przychody_pokoje_"))]
-    dzial  = [c for c in cols if c == "fnb_wynajem_sali"]
-    gastro = [c for c in cols if c.startswith("fnb_") and c not in dzial]
-    inne   = [c for c in cols if (c.startswith("przychody_") and not c.startswith("przychody_pokoje_")) or c.startswith("proc_pokoi_")]
-    koszty = [c for c in cols if c.startswith(("r_", "g_"))]
     return {
-        "Pokoje": sorted(pokoje),
-        "Gastronomia": sorted(gastro),
-        "Dział Sprzedaży": sorted(dzial),
-        "Inne Centra": sorted(inne),
-        "Koszty": sorted(koszty),
+        "Pokoje": sorted([c for c in cols if c.startswith("pokoje_")]),
+        "Gastronomia": sorted([c for c in cols if c.startswith("fnb_")]),
+        "Dział Sprzedaży": sorted([c for c in cols if c.startswith("sprzedaz_")]),
+        "Inne Centra": sorted([c for c in cols if c.startswith("inne_")]),
+        "Koszty": sorted([c for c in cols if c.startswith("koszt_")]),
     }
 
 def _group_key(group: str) -> str:
-    return (
-        group.lower()
-        .replace(" ", "_").replace("ł","l").replace("ś","s").replace("ż","z")
-        .replace("ź","z").replace("ą","a").replace("ę","e").replace("ó","o")
-        .replace("ń","n").replace("ć","c")
-    )
+    return (group.lower()
+            .replace(" ", "_").replace("ł","l").replace("ś","s").replace("ż","z")
+            .replace("ź","z").replace("ą","a").replace("ę","e").replace("ó","o")
+            .replace("ń","n").replace("ć","c"))
 
 def _filter_missing_rows(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:
     cols = [c for c in cols if c in df.columns]
@@ -98,21 +257,42 @@ def _style_missing(df_like: pd.DataFrame, *, subset_cols: Optional[Iterable[str]
 
     miss = _is_missing_frame(df[cols])
     def style_subset(subdf: pd.DataFrame) -> pd.DataFrame:
-        # subdf ma kształt subsetu; dopasuj maskę do subdf
         local = miss.reindex(subdf.index).reindex(columns=subdf.columns, fill_value=False)
         return local.replace({True: "background-color: #ffdddd", False: ""})
 
     return df.style.apply(style_subset, axis=None, subset=cols)
 
-# ---------- RENDER ----------
+def _column_config_for(df: pd.DataFrame) -> Dict[str, st.column_config.BaseColumn]:
+    cfg: Dict[str, st.column_config.BaseColumn] = {}
+    for c in df.columns:
+        if c == "data":
+            cfg[c] = st.column_config.DateColumn("Data", disabled=True)
+            continue
+        label = DISPLAY_LABELS.get(c, c)
+        if c.endswith("_qty"):
+            cfg[c] = st.column_config.NumberColumn(label, step=1.0, format="%.0f")
+        elif c.endswith("_pln"):
+            cfg[c] = st.column_config.NumberColumn(label, step=1.0, format="%.2f")
+        elif c.endswith("_pct"):
+            cfg[c] = st.column_config.NumberColumn(label, step=0.01, format="%.2f")
+        else:
+            cfg[c] = st.column_config.NumberColumn(label, step=1.0, format="%.2f")
+    return cfg
+
+
+# ─────────────────────────────
+# 4) GŁÓWNY RENDER
+# ─────────────────────────────
 def render(readonly: bool = False) -> None:
-    role  = st.session_state.get("role", "GM")
-    year  = int(st.session_state.get("year", 2025))
+    role = st.session_state.get("role", "GM")
+    year = int(st.session_state.get("year", 2025))
     month = int(st.session_state.get("month", 1))
     is_inv = readonly or (role == "INV")
-    init_exec_year(year)
 
-    # Header + nawigacja miesięcy
+    init_exec_year(year)
+    migrate_exec_session()  # ← jednorazowa migracja nazw kolumn w sesji
+
+    # Nagłówek + sterowanie miesiącem
     c1, c2, c3 = st.columns([7, 1, 1])
     with c1:
         st.header("Wykonanie – dziennik i podsumowania")
@@ -132,10 +312,10 @@ def render(readonly: bool = False) -> None:
     df_full = get_month_df(year, month)
     df_edit, df_future = split_editable(df_full)
 
+    # Grupy i filtry
     groups = _detect_groups(df_edit)
     groups["Wszystkie"] = [c for c in df_edit.columns if c != "data"]
 
-    # Filtry
     fc1, fc2, fc3 = st.columns([2, 3, 2])
     with fc1:
         only_missing = st.checkbox(
@@ -151,20 +331,12 @@ def render(readonly: bool = False) -> None:
             key=f"group_{year}_{month}",
         )
     with fc3:
-        # licznik po filtrze (aktualizowany niżej)
         cnt_placeholder = st.empty()
 
     group_cols = [c for c in groups.get(group, []) if c in df_edit.columns]
     subset_cols_for_style = group_cols or [c for c in REQUIRED_COLS_DEFAULT if c in df_edit.columns]
 
-    # Widok wg filtra
-    if only_missing:
-        base_cols = group_cols or subset_cols_for_style
-        view_df = _filter_missing_rows(df_edit, base_cols)
-    else:
-        view_df = df_edit
-
-    # licznik X z Y
+    view_df = _filter_missing_rows(df_edit, group_cols or subset_cols_for_style) if only_missing else df_edit
     cnt_placeholder.caption(f"Pokazujesz {len(view_df)} z {len(df_edit)} dni")
 
     # Dni do dziś
@@ -174,13 +346,7 @@ def render(readonly: bool = False) -> None:
         st.dataframe(_style_missing(view_df, subset_cols=subset_cols_for_style), width="stretch", hide_index=True)
         all_now = pd.concat([df_edit, df_future], ignore_index=True)
     else:
-        cfg: Dict[str, st.column_config.BaseColumn] = {
-            "data": st.column_config.DateColumn("Data", disabled=True)
-        }
-        for c in view_df.columns:
-            if c != "data":
-                cfg[c] = st.column_config.NumberColumn(c, step=1.0, format="%.2f")
-
+        cfg = _column_config_for(view_df)
         editor_key = f"editor_{year}_{month}_{_group_key(group)}_{int(only_missing)}"
         edited_view = st.data_editor(
             view_df, column_config=cfg, num_rows="fixed", width="stretch",
@@ -255,7 +421,7 @@ def render(readonly: bool = False) -> None:
     g2.metric("Koszty F&B", f"{f_m['g_k_razem']:.2f} zł", delta=f"YTD {f_y['g_k_razem']:.2f} zł")
     g3.metric("Wynik F&B", f"{f_m['g_wynik']:.2f} zł", delta=f"YTD {f_y['g_wynik']:.2f} zł")
 
-    # Eksport
+    # Eksport (BytesIO + opcjonalny zapis lokalny)
     st.subheader("Eksport do Excela")
     if st.button("Eksportuj wszystkie lata/miesiące do XLSX", type="secondary", key="export_all_xlsx"):
         try:
