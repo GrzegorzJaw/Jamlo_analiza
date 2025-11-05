@@ -1,5 +1,6 @@
 # =========================================
-# file: wykonanie.py
+# file: pages/wykonanie.py
+# Lokalna praca na danych (session_state), bez wczytywania z chmury
 # =========================================
 from __future__ import annotations
 
@@ -36,26 +37,20 @@ from core.state_local import (
 
 MONTHS_PL = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"]
 
-st.set_page_config(page_title="Wykonanie – dziennik (lokalnie)", layout="wide")
-
 
 def render(readonly: bool = False) -> None:
+    """Widok Wykonania – korzysta z kontekstu ustawionego w app.py."""
+    role = st.session_state.get("role", "GM")
+    year = int(st.session_state.get("year", 2025))
+    month = int(st.session_state.get("month", 1))
+    is_inv = readonly or (role == "INV")  # INV wymusza podgląd
+
+    init_exec_year(year)  # tworzy puste DF-y, jeśli nie istnieją
+
     st.header("Wykonanie – dziennik i podsumowania (lokalnie, bez wczytywania)")
+    st.caption("Dni > dziś są tylko w podglądzie. Zmiany zapisywane są w sesji + audit log.")
 
-    role = st.sidebar.selectbox("Rola", ["GM (analityk)", "INV (inwestor)"])
-    is_inv = role.startswith("INV")
-
-    year = int(st.sidebar.number_input("Rok", min_value=2000, max_value=2100, value=2025, step=1))
-    init_exec_year(year)
-
-    month = int(
-        st.sidebar.selectbox(
-            "Miesiąc", options=list(range(1, 13)), format_func=lambda m: f"{MONTHS_PL[m-1]} ({m:02d})"
-        )
-    )
-    st.sidebar.caption("Dane żyją w sesji. Na końcu wyeksportujesz do XLSX. Dni > dziś są w podglądzie.")
-
-    _month_editor(year, month, readonly or is_inv)
+    _month_editor(year, month, is_inv)
     st.markdown("---")
     _kpis(year, month)
     st.markdown("---")
@@ -70,7 +65,7 @@ def _month_editor(year: int, month: int, readonly: bool) -> None:
 
     st.markdown("#### Dni do dziś")
     if readonly:
-        st.info("Tryb podglądu – edycja wyłączona.")
+        st.info("Tryb podglądu – edycja wyłączona (INV).")
         st.dataframe(df_edit, use_container_width=True, hide_index=True)
     else:
         cfg = {"data": st.column_config.DateColumn("Data")}
@@ -85,7 +80,7 @@ def _month_editor(year: int, month: int, readonly: bool) -> None:
             num_rows="fixed",
             use_container_width=True,
             hide_index=True,
-            key=f"editor_{year}_{month}",
+            key=f"editor_{year}_{month}",  # klucz per miesiąc – brak kolizji
         )
 
         left, right = st.columns([1, 3])
@@ -138,8 +133,8 @@ def _month_editor(year: int, month: int, readonly: bool) -> None:
 
 def _kpis(year: int, month: int) -> None:
     st.subheader("Podsumowania KPI")
-    df = get_month_df(year, month)
 
+    df = get_month_df(year, month)
     r_m = kpi_rooms_month(df)
     f_m = kpi_fnb_month(df)
 
@@ -177,7 +172,3 @@ def _export_area() -> None:
                 )
         except Exception as e:
             st.error(f"Nie udało się wyeksportować: {e}")
-
-
-if __name__ == "__main__":
-    render(readonly=False)
