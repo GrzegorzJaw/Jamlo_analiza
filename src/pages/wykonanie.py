@@ -1,18 +1,22 @@
-# ===============================
+# =========================================
 # file: pages/wykonanie.py
-# ===============================
+# =========================================
 from __future__ import annotations
+
+import io
+import os
 import pandas as pd
 import streamlit as st
+
 from core.state_local import (
     init_exec_year, get_month_df, save_month_df, get_audit, split_editable,
-    export_all_to_excel,
     ROOMS_COST_PERSONNEL, ROOMS_COST_MATERIALS, ROOMS_COST_SERVICES, ROOMS_COST_OTHER,
     FNB_REVENUE_DAY_COLS, FNB_COST_RAW, FNB_COST_PERSONNEL, FNB_COST_MATERIALS, FNB_COST_SERVICES,
     kpi_rooms_month, kpi_rooms_ytd, kpi_fnb_month, kpi_fnb_ytd,
 )
 
 MONTHS_PL = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"]
+
 
 def render(readonly: bool = False) -> None:
     role  = st.session_state.get("role", "GM")
@@ -22,7 +26,7 @@ def render(readonly: bool = False) -> None:
 
     init_exec_year(year)
 
-    # Nagłówek strony + strzałki miesiąc ◀︎/▶︎ (bez dodatkowych opisów)
+    # Tytuł + strzałki miesiąca
     c1, c2, c3 = st.columns([7,1,1])
     with c1:
         st.header("Wykonanie – dziennik i podsumowania")
@@ -56,8 +60,9 @@ def render(readonly: bool = False) -> None:
             cfg[c] = st.column_config.NumberColumn(c, step=1.0, format="%.2f")
 
         edited = st.data_editor(
-            df_edit, column_config=cfg, num_rows="fixed", use_container_width=True,
-            hide_index=True, key=f"editor_{year}_{month}"
+            df_edit, column_config=cfg, num_rows="fixed",
+            use_container_width=True, hide_index=True,
+            key=f"editor_{year}_{month}"
         )
         left, right = st.columns([1,3])
         with left:
@@ -125,18 +130,45 @@ def render(readonly: bool = False) -> None:
 
     # Eksport
     st.subheader("Eksport do Excela")
-    export_path = "/mnt/data/wykonanie_export.xlsx"
     if st.button("Eksportuj wszystkie lata/miesiące do XLSX", type="secondary", key="export_all_xlsx"):
         try:
-            path = export_all_to_excel(export_path)
+            buffer = _export_all_to_excel_bytes()  # in-memory
             st.success("Wyeksportowano. Poniżej przycisk pobierania.")
-            with open(path, "rb") as f:
-                st.download_button(
-                    "Pobierz XLSX",
-                    data=f.read(),
-                    file_name="wykonanie_export.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="export_download_btn",
-                )
+
+            st.download_button(
+                "Pobierz XLSX",
+                data=buffer.getvalue(),
+                file_name="wykonanie_export.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="export_download_btn",
+            )
+
+            # Opcjonalny zapis na dysk (jeśli chcesz też plik w /mnt/data)
+            out_dir = "/mnt/data"
+            out_path = os.path.join(out_dir, "wykonanie_export.xlsx")
+            try:
+                os.makedirs(out_dir, exist_ok=True)
+                with open(out_path, "wb") as f:
+                    f.write(buffer.getvalue())
+                st.caption(f"Zapisano też lokalnie: {out_path}")
+            except Exception:
+                # Brak uprawnień/katalogu – ignorujemy, bo pobieranie działa
+                pass
+
         except Exception as e:
             st.error(f"Nie udało się wyeksportować: {e}")
+
+
+def _export_all_to_excel_bytes() -> io.BytesIO:
+    """Buduje plik XLSX w pamięci z całej zawartości st.session_state['exec']."""
+    exec_state = st.session_state.get("exec", {})
+    if not exec_state:
+        raise RuntimeError("Brak danych w sesji do eksportu.")
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as wr:
+        for year, months in exec_state.items():
+            for m, df in months.items():
+                name = f"WYKONANIE_{int(year)}_{int(m):02d}"[:31]
+                df.to_excel(wr, index=False, sheet_name=name)
+    buffer.seek(0)
+    return buffer
