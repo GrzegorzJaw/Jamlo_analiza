@@ -1,192 +1,224 @@
 # src/pages/01_Pokoje.py
 from __future__ import annotations
-from typing import Dict, List
-import pandas as pd
 import streamlit as st
+import pandas as pd
 
-from core.state_local import init_exec_year, migrate_to_new_schema, get_month_df
+# Jeżeli masz te funkcje – użyj; jeśli nie, strona pokaże pustą macierz (0)
+try:
+    from core.state_local import get_month_df, init_exec_year, migrate_to_new_schema
+except Exception:
+    def get_month_df(year: int, month: int) -> pd.DataFrame:  # fallback
+        return pd.DataFrame()
+    def init_exec_year(year: int): pass
+    def migrate_to_new_schema(): pass
 
-MONTHS_PL = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"]
-
+MONTHS = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Pomocnicze
+# DEFINICJA WIERSZY – zgodnie z Twoim arkuszem
+# ──────────────────────────────────────────────────────────────────────────────
+ROWS = [
+    "liczba pokoi",
+    "zdolność eksploatacyjna",
+    "sprzedane pokojonoce",
+    "frekwencja",
+    "średnia cena (RevPOR)",
+
+    "— Sprzedaż pokoi —",
+    "Sprzedaż pokoi",
+    "Sprzedaż pokoi S&M",
+    "Koszty wydziałowe",
+
+    "— Koszty osobowe —",
+    "Wynagrodzenie brutto i umowy zlecenia",
+    "ZUS",
+    "PFRON",
+    "Wyżywienie",
+    "Odzież służbowa i bhp",
+    "Usługi medyczne",
+    "Inne",
+
+    "— Zużycie materiałów —",
+    "Materiały eksploatacyjne, Artykuły spożywcze",
+    "Kosmetyki dla gości (płyn, mydło), Środki czystości 1,5",
+    "Inne materiały, w tym karty meldunkowe, galanteria papiernicza, art. biurowe",
+
+    "— Usługi obce —",
+    "Usługi sprzątania",
+    "Usługi prania (z wyłączeniem odzieży służbowej)",
+    "Usługi prania odzieży służbowej",
+    "Wynajem sprzętu (kopiarka , maty, maszyna do butów )",
+    "Inne usługi (szkolenie BHP)",
+
+    "— Pozostałe koszty —",
+    "Prowizje OTA&GDS",
+
+    "— WYNIK DEPARTAMENTU —",
+    "koszt na sprzedany pokój",
+]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PROSTE POMOCNIKI (zostają nawet, jeśli nie podłączysz źródeł od razu)
 # ──────────────────────────────────────────────────────────────────────────────
 def _num(s: pd.Series | float | int) -> pd.Series:
     return pd.to_numeric(s, errors="coerce").fillna(0.0)
 
-def _sum_cols(df: pd.DataFrame, cols: List[str]) -> float:
-    cols = [c for c in cols if c in df.columns]
-    if not cols:
-        return 0.0
-    return float(_num(df[cols].stack()).sum())
+def _find_cols(df: pd.DataFrame, *needles: str):
+    """Znajdź kolumny zawierające wszystkie podane frazy (case-insensitive)."""
+    if df.empty: return []
+    low = {c: c.lower() for c in df.columns}
+    out = []
+    for c, lc in low.items():
+        if all(n in lc for n in needles):
+            out.append(c)
+    return out
 
-def _sum_prefix(df: pd.DataFrame, prefix: str) -> float:
-    cols = [c for c in df.columns if c.startswith(prefix)]
-    if not cols:
-        return 0.0
-    return float(_num(df[cols].stack()).sum())
-
+def _sum(df: pd.DataFrame, *needles: str) -> float:
+    cols = _find_cols(df, *needles)
+    return float(_num(df[cols].stack()).sum()) if cols else 0.0
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Agregacje miesięczne – POKOJE
-# (podmień mapowania kolumn na Twoje faktyczne nazwy z "Operacje")
+# LICZENIE MIESIĘCZNE – NA RAZIE z heurystyką nazw (możesz podmienić na twarde mapy)
 # ──────────────────────────────────────────────────────────────────────────────
-def _rooms_month_summary(df: pd.DataFrame) -> Dict[str, float]:
-    """
-    Zwraca słownik wartości dla zakładki 'Pokoje' za dany miesiąc.
-    Źródło: dziennik dzienny (Operacje) zwrócony przez get_month_df().
-    """
+def _rooms_month_summary(df: pd.DataFrame) -> dict[str, float]:
     # Ilości / sprzedaż
-    available = float((_num(df.get("pokoje_dostepne_qty", 0)) - _num(df.get("pokoje_oos_qty", 0))).sum())
-    sold = float((_num(df.get("pokoje_sprzedane_bez_qty", 0)) + _num(df.get("pokoje_sprzedane_ze_qty", 0))).sum())
-    revenue_rooms = float(_num(df.get("pokoje_przychod_netto_pln", 0)).sum())
+    available = _sum(df, "pokoje", "do sprzeda") or _sum(df, "pokoje", "dostęp")
+    oos       = _sum(df, "oos")
+    capacity  = max(available - oos, 0.0)
 
-    frekw = (sold / available) if available > 0 else 0.0
+    sold = (
+        _sum(df, "sprzedane", "bez") +
+        _sum(df, "sprzedane", "ze")
+    )
+    revenue_rooms = _sum(df, "przychody", "pokoje") or _sum(df, "sprzedaż", "pokoj")
+    sm_revenue    = _sum(df, "sprzedaż", "s&m")  # jeśli wyodrębniasz
+
+    occ = (sold / capacity) if capacity > 0 else 0.0
     revpor = (revenue_rooms / sold) if sold > 0 else 0.0
 
-    # Koszty wydziałowe (prefiks dla pokoje – dopasuj do swoich nazw)
-    koszt_wydzialowe = _sum_prefix(df, "koszt_r_")
+    # Koszty – placeholdery + heurystyka
+    k_wydz   = _sum(df, "koszt", "wydział") or 0.0
 
-    # Koszty osobowe – rozbicia (dopasuj nazwy kolumn gdy dodasz źródła)
-    k_os_wyn = _sum_cols(df, ["koszt_r_osobowe_wynagrodzenia_pln"])
-    k_os_zus = _sum_cols(df, ["koszt_r_osobowe_zus_pln"])
-    k_os_pfr = _sum_cols(df, ["koszt_r_osobowe_pfron_pln"])
-    k_os_wyz = _sum_cols(df, ["koszt_r_osobowe_wyzywienie_pln"])
-    k_os_bhp = _sum_cols(df, ["koszt_r_osobowe_odziez_bhp_pln"])
-    k_os_med = _sum_cols(df, ["koszt_r_osobowe_medyczne_pln"])
-    k_os_inn = _sum_cols(df, ["koszt_r_osobowe_inne_pln"])
+    k_wyn    = _sum(df, "koszt", "wynagrodz")
+    k_zus    = _sum(df, "zus")
+    k_pfron  = _sum(df, "pfron")
+    k_wyz    = _sum(df, "wyżyw")
+    k_bhp    = _sum(df, "odzie", "bhp")
+    k_med    = _sum(df, "medycz")
+    k_inneos = _sum(df, "osobowe", "inne")
 
-    # Zużycie materiałów (pokoje)
-    k_mat_eks = _sum_cols(df, ["koszt_r_materialy_eksplo_spozywcze_pln"])
-    k_mat_kos = _sum_cols(df, ["koszt_r_materialy_kosmetyki_czystosc_pln"])
-    k_mat_inn = _sum_cols(df, ["koszt_r_materialy_inne_biurowe_pln"])
+    k_mat_eks = _sum(df, "materia", "eksplo") or _sum(df, "artykuły", "spożywcze")
+    k_mat_kos = _sum(df, "kosmetyki") + _sum(df, "środki", "czystości")
+    k_mat_inn = _sum(df, "inne", "materia") + _sum(df, "galanteria") + _sum(df, "biurowe")
 
-    # Usługi obce (pokoje)
-    k_usl_sprz = _sum_cols(df, ["koszt_r_uslugi_sprzatanie_pln"])
-    k_usl_pran = _sum_cols(df, ["koszt_r_uslugi_pranie_pln"])  # zewnętrzne + odzież służbowa – rozbijesz później
-    k_usl_pran_odz = _sum_cols(df, ["koszt_r_uslugi_pranie_odziezy_pln"])
-    k_usl_wyn = _sum_cols(df, ["koszt_r_uslugi_wynajem_sprzetu_pln"])
-    k_usl_inne = _sum_cols(df, ["koszt_r_uslugi_inne_pln"])    # np. szkolenia BHP
+    k_usl_sprz = _sum(df, "usługi", "sprząt")
+    k_usl_pran = _sum(df, "usługi", "prani") - _sum(df, "odzież", "służbow")  # szacunkowo
+    k_usl_pr_odz = _sum(df, "pranie", "odzież")
+    k_usl_wyn = _sum(df, "wynajem", "sprzęt")
+    k_usl_inne = _sum(df, "szkolen", "bhp") + _sum(df, "usługi", "inne")
 
-    # Pozostałe
-    k_prow_ota = _sum_cols(df, ["koszt_r_prowizje_ota_gds_pln"])
+    k_prow = _sum(df, "prowizje") + _sum(df, "ota") + _sum(df, "gds")
+
+    wynik = revenue_rooms - (
+        k_wydz + k_wyn + k_zus + k_pfron + k_wyz + k_bhp + k_med + k_inneos +
+        k_mat_eks + k_mat_kos + k_mat_inn +
+        k_usl_sprz + k_usl_pran + k_usl_pr_odz + k_usl_wyn + k_usl_inne +
+        k_prow
+    )
+    koszt_na_sprz = (0.0 if sold <= 0 else (revenue_rooms - wynik) / sold)
 
     return {
-        # BLOK: narastająco / główne KPI
-        "Ilość pokoi": available,                        # placeholder = dostępne – OOS; rozdzielisz jeśli chcesz
-        "zdolność eksploatacyjna": available,            # jw.
+        "liczba pokoi": available,                     # jeśli chcesz mieć „liczbę pokoi stałą” → podmień źródło
+        "zdolność eksploatacyjna": capacity,
         "sprzedane pokojonoce": sold,
-        "frekwencja (%)": frekw,                         # % – format w UI
+        "frekwencja": occ,
         "średnia cena (RevPOR)": revpor,
-        "Sprzedaż pokoi 701/0111; 0112": revenue_rooms,  # przychody pokoi (netto)
 
-        # BLOK: koszty wydziałowe
-        "Koszty wydziałowe": koszt_wydzialowe,
+        "Sprzedaż pokoi": revenue_rooms,
+        "Sprzedaż pokoi S&M": sm_revenue,
+        "Koszty wydziałowe": k_wydz,
 
-        # BLOK: koszty osobowe (szczegół)
-        "Wynagrodzenie brutto i umowy zlecenia 701/0101; 201100; ZUS 701/0102": k_os_wyn + k_os_zus,
-        "PFRON 701/010102": k_os_pfr,
-        "Wyżywienie 701/010104": k_os_wyz,
-        "Odzież służbowa i BHP 701/0107; 201902": k_os_bhp,
-        "Usługi medyczne 701/0109": k_os_med,
-        "Inne osobowe 701/010199": k_os_inn,
+        "Wynagrodzenie brutto i umowy zlecenia": k_wyn,
+        "ZUS": k_zus,
+        "PFRON": k_pfron,
+        "Wyżywienie": k_wyz,
+        "Odzież służbowa i bhp": k_bhp,
+        "Usługi medyczne": k_med,
+        "Inne": k_inneos,
 
-        # BLOK: zużycie materiałów
         "Materiały eksploatacyjne, Artykuły spożywcze": k_mat_eks,
-        "Kosmetyki dla gości, środki czystości": k_mat_kos,
-        "Inne materiały (karty meldunkowe, art. biurowe)": k_mat_inn,
+        "Kosmetyki dla gości (płyn, mydło), Środki czystości 1,5": k_mat_kos,
+        "Inne materiały, w tym karty meldunkowe, galanteria papiernicza, art. biurowe": k_mat_inn,
 
-        # BLOK: usługi obce
-        "Usługi sprzątania 701/02102": k_usl_sprz,
-        "Usługi prania (z wyłączeniem odzieży służbowej) 701/02105": k_usl_pran,
-        "Usługi prania odzieży służbowej 701/02107": k_usl_pran_odz,
-        "Wynajem sprzętu (kopiarka, maty, maszyna do butów)": k_usl_wyn,
-        "Inne usługi (szkolenia BHP)": k_usl_inne,
+        "Usługi sprzątania": k_usl_sprz,
+        "Usługi prania (z wyłączeniem odzieży służbowej)": max(k_usl_pran, 0.0),
+        "Usługi prania odzieży służbowej": k_usl_pr_odz,
+        "Wynajem sprzętu (kopiarka , maty, maszyna do butów )": k_usl_wyn,
+        "Inne usługi (szkolenie BHP)": k_usl_inne,
 
-        # BLOK: pozostałe koszty
-        "Prowizje OTA&GDS": k_prow_ota,
+        "Prowizje OTA&GDS": k_prow,
 
-        # WYNIK
-        "WYNIK DEPARTAMENTU": revenue_rooms - koszt_wydzialowe,  # na razie sprzedaż - koszty wydziałowe
+        "WYNIK DEPARTAMENTU": wynik,
+        "koszt na sprzedany pokój": koszt_na_sprz,
     }
 
-
 def _build_matrix(year: int) -> pd.DataFrame:
-    """Tabela: wiersze jak w arkuszu, kolumny = 12 mies."""
-    rows_order = [
-        # sekcje nagłówkowe z arkusza pomijamy – same pozycje
-        "Ilość pokoi",
-        "zdolność eksploatacyjna",
-        "sprzedane pokojonoce",
-        "frekwencja (%)",
-        "średnia cena (RevPOR)",
-        "Sprzedaż pokoi 701/0111; 0112",
-        "Koszty wydziałowe",
-        "Wynagrodzenie brutto i umowy zlecenia 701/0101; 201100; ZUS 701/0102",
-        "PFRON 701/010102",
-        "Wyżywienie 701/010104",
-        "Odzież służbowa i BHP 701/0107; 201902",
-        "Usługi medyczne 701/0109",
-        "Inne osobowe 701/010199",
-        "Materiały eksploatacyjne, Artykuły spożywcze",
-        "Kosmetyki dla gości, środki czystości",
-        "Inne materiały (karty meldunkowe, art. biurowe)",
-        "Usługi sprzątania 701/02102",
-        "Usługi prania (z wyłączeniem odzieży służbowej) 701/02105",
-        "Usługi prania odzieży służbowej 701/02107",
-        "Wynajem sprzętu (kopiarka, maty, maszyna do butów)",
-        "Inne usługi (szkolenia BHP)",
-        "Prowizje OTA&GDS",
-        "WYNIK DEPARTAMENTU",
-    ]
-
-    # policz miesiące
-    month_summaries: Dict[int, Dict[str, float]] = {}
+    # policz każdy miesiąc
+    month_maps: dict[int, dict[str, float]] = {}
     for m in range(1, 13):
         df_m = get_month_df(year, m)
-        month_summaries[m] = _rooms_month_summary(df_m)
+        month_maps[m] = _rooms_month_summary(df_m)
 
-    # zbuduj macierz
-    mat = pd.DataFrame(index=rows_order, columns=[MONTHS_PL[m-1] for m in range(1, 13)], dtype=float)
-    for row in rows_order:
+    # zbuduj macierz z domyślnym 0
+    mat = pd.DataFrame(0.0, index=ROWS, columns=MONTHS)
+    for row in ROWS:
+        if row.startswith("—"):     # sekcje – zostaw puste
+            mat.loc[row, :] = None
+            continue
         for m in range(1, 13):
-            mat.at[row, MONTHS_PL[m-1]] = month_summaries[m].get(row, 0.0)
-
+            mat.loc[row, MONTHS[m-1]] = month_maps[m].get(row, 0.0)
     return mat
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # UI
 # ──────────────────────────────────────────────────────────────────────────────
-def _format_money(x: float) -> str:
-    return f"{x:,.2f}".replace(",", " ").replace(".", ",")
-
-def _format_int(x: float) -> str:
-    return f"{x:,.0f}"
-
-def render() -> None:
+def render():
     year = int(st.session_state.get("year", 2025))
-
     init_exec_year(year)
     migrate_to_new_schema()
 
-    st.header(f"Pokoje – podsumowania miesięczne ({year})")
+    st.header(f"Departament POKOJE — {year}")
 
     matrix = _build_matrix(year)
 
-    # formaty wierszy
-    fmt_map = {}
-    for r in matrix.index:
-        if "frekwencja" in r:
-            fmt_map[r] = "{:.1%}".format
-        elif "RevPOR" in r or "Sprzedaż" in r or "Koszt" in r or "WYNIK" in r or "Prowizje" in r:
-            fmt_map[r] = _format_money
-        else:
-            fmt_map[r] = _format_int
+    # proste formatowanie: % dla frekwencji, 2 miejsca dla PLN, reszta całkowite
+    def _fmt(row_name: str, v):
+        if row_name == "frekwencja" and pd.notna(v):
+            return f"{float(v)*100:,.1f}%".replace(",", " ")
+        if row_name.startswith("—") or pd.isna(v):
+            return ""
+        if row_name in [
+            "średnia cena (RevPOR)", "Sprzedaż pokoi", "Sprzedaż pokoi S&M",
+            "Koszty wydziałowe", "Wynagrodzenie brutto i umowy zlecenia", "ZUS", "PFRON",
+            "Wyżywienie", "Odzież służbowa i bhp", "Usługi medyczne", "Inne",
+            "Materiały eksploatacyjne, Artykuły spożywcze",
+            "Kosmetyki dla gości (płyn, mydło), Środki czystości 1,5",
+            "Inne materiały, w tym karty meldunkowe, galanteria papiernicza, art. biurowe",
+            "Usługi sprzątania", "Usługi prania (z wyłączeniem odzieży służbowej)",
+            "Usługi prania odzieży służbowej", "Wynajem sprzętu (kopiarka , maty, maszyna do butów )",
+            "Inne usługi (szkolenie BHP)", "Prowizje OTA&GDS", "WYNIK DEPARTAMENTU",
+            "koszt na sprzedany pokój",
+        ]:
+            return f"{float(v):,.2f}".replace(",", " ").replace(".", ",")
+        return f"{float(v):,.0f}".replace(",", " ")
 
-    styled = matrix.style.format(formatter=fmt_map).set_properties(**{"text-align": "right"})
-    st.dataframe(styled, use_container_width=True)
+    # sformatuj do prezentacji (Streamlit nie wspiera w pełni Styler, więc robimy post-proc)
+    display = matrix.copy().astype(object)
+    for r in display.index:
+        for c in display.columns:
+            display.at[r, c] = _fmt(r, display.at[r, c])
 
-# NA SAMYM DOLE:
+    st.dataframe(display, use_container_width=True)
+
+# w multipage Streamlit kod pliku jest wykonywany – ale wymuśmy render wprost:
 render()
