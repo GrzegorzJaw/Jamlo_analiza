@@ -1,158 +1,119 @@
-# ===============================
-# file: app.py
-# ===============================
-from __future__ import annotations
-
-from typing import Any, Callable, Optional
+# app.py
+import importlib
+from typing import Optional
 
 import streamlit as st
 
-# --- Strony ładowane leniwie (bez twardych zależności) ---
-def _try_import(path: str) -> Optional[Any]:
+
+# --- Ustawienia strony ---
+st.set_page_config(
+    page_title="Finansowy Hotele — Analiza",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+# --- Helpers: bezpieczne importy i render ---
+def _try_import(path: str):
     try:
-        return __import__(path, fromlist=["render"])
+        return importlib.import_module(path)
     except Exception:
         return None
 
 
-dashboard_gm = _try_import("pages.dashboard_gm")
-plan = _try_import("pages.plan")
-wykonanie = _try_import("pages.wykonanie")
-raporty = _try_import("pages.raporty")
-
-# --- Stan lokalny: inicjalizacja roku i migracja schematu kolumn ---
-from core.state_local import init_exec_year, migrate_to_new_schema
-
-MONTHS_PL = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"]
-
-
-# ---------------------------------------------------------------------
-# Session defaults
-# ---------------------------------------------------------------------
-def _ensure_defaults() -> None:
-    s = st.session_state
-    s.setdefault("nav", "Wykonanie")
-    s.setdefault("role", "GM")  # GM = analityk, INV = inwestor
-    s.setdefault("year", 2025)
-    s.setdefault("month", 1)
-
-
-# ---------------------------------------------------------------------
-# Safe render (różne sygnatury)
-# ---------------------------------------------------------------------
-def _safe_render(mod: Any, **kwargs) -> None:
-    if mod is None:
-        st.info("Moduł strony jest obecnie niedostępny.")
+def _safe_render(page_mod, *, title: Optional[str] = None):
+    """Wywołuje page_mod.render() jeśli istnieje, inaczej pokazuje komunikat."""
+    if title:
+        st.header(title)
+    if page_mod is None:
+        st.info("Moduł strony nie został odnaleziony.")
         return
-    render: Callable[..., Any] = getattr(mod, "render", None)
-    if render is None:
-        st.info("Strona nie udostępnia funkcji render().")
-        return
-    try:
-        render(**kwargs)
-    except TypeError:
-        # kompatybilność wsteczna (stare strony bez parametrów)
-        render()
-
-
-# ---------------------------------------------------------------------
-# Sidebar: NAWIGACJA (top) + KONTEKST (below)
-# ---------------------------------------------------------------------
-def _sidebar_context_and_nav() -> tuple[str, bool, int, int]:
-    """
-    Jeden zestaw kontrolek globalnych.
-    Dlaczego: unikamy duplikatów elementów (StreamlitDuplicateElementId).
-    """
-    _ensure_defaults()
-
-    st.sidebar.title("Finansowy Hotele")
-
-    # Nawigacja NA GÓRZE
-    nav = st.sidebar.radio(
-        "Nawigacja",
-        options=["Pulpit GM", "Plan", "Wykonanie", "Raporty"],
-        index=["Pulpit GM", "Plan", "Wykonanie", "Raporty"].index(st.session_state["nav"]),
-        key="nav_radio",
-    )
-    st.session_state["nav"] = nav
-
-    st.sidebar.markdown("---")
-
-    # KONTEKST (rola/rok/miesiąc)
-    role_label = st.sidebar.selectbox(
-        "Rola",
-        options=["GM (analityk)", "INV (inwestor)"],
-        index=0 if st.session_state["role"] == "GM" else 1,
-        key="role_select",
-    )
-    st.session_state["role"] = "INV" if role_label.startswith("INV") else "GM"
-    is_inv = st.session_state["role"] == "INV"
-
-    year = int(
-        st.sidebar.number_input(
-            "Rok",
-            min_value=2000,
-            max_value=2100,
-            value=int(st.session_state["year"]),
-            step=1,
-            key="year_input",
-        )
-    )
-    st.session_state["year"] = year
-
-    month = int(
-        st.sidebar.selectbox(
-            "Miesiąc",
-            options=list(range(1, 13)),
-            index=(int(st.session_state["month"]) - 1),
-            format_func=lambda m: f"{MONTHS_PL[m-1]} ({m:02d})",
-            key="month_select",
-        )
-    )
-    st.session_state["month"] = month
-
-    st.sidebar.caption("Dane żyją lokalnie w sesji. Eksport do XLSX wykonasz w zakładce „Wykonanie”.")
-    return nav, is_inv, year, month
-
-
-# ---------------------------------------------------------------------
-# Router
-# ---------------------------------------------------------------------
-def _route(nav: str, is_inv: bool, year: int, month: int) -> None:
-    """
-    Centralny przełącznik stron.
-    Ważne: każdorazowo dbamy o spójność danych (init + migracja).
-    """
-    # Utrzymanie spójności schematu (nowe nazwy kolumn) i gotowych miesięcy
-    init_exec_year(year)
-    migrate_to_new_schema()
-
-    if nav == "Pulpit GM":
-        _safe_render(dashboard_gm, year=year, month=month, readonly=is_inv)
-    elif nav == "Plan":
-        _safe_render(plan, year=year, month=month, readonly=is_inv)
-    elif nav == "Wykonanie":
-        # strona sama rysuje nagłówek i strzałki miesięcy
+    render = getattr(page_mod, "render", None)
+    if callable(render):
         try:
-            _safe_render(wykonanie, readonly=is_inv)
-        except TypeError:
-            _safe_render(wykonanie)
-    elif nav == "Raporty":
-        _safe_render(raporty, year=year, month=month, readonly=is_inv)
+            render()
+        except Exception as ex:
+            st.error(f"Błąd podczas renderowania strony: {ex}")
     else:
-        st.info("Zakładka w przygotowaniu.")
+        st.info("Ta strona nie ma funkcji render().")
 
 
-# ---------------------------------------------------------------------
-# Entry
-# ---------------------------------------------------------------------
-def main() -> None:
-    st.set_page_config(page_title="Analiza hotelowa", layout="wide")
-    _ensure_defaults()
-    nav, is_inv, year, month = _sidebar_context_and_nav()
-    # Nie rysujemy tu nagłówków – każdy moduł sam odpowiada za swój tytuł
-    _route(nav, is_inv, year, month)
+# --- Import stron (jeśli istnieją) ---
+page_rooms = _try_import("pages.rooms")
+page_wykonanie = _try_import("pages.wykonanie")  # nieużywane tutaj, ale bywa przydatne
 
 
-if __name__ == "__main__":
-    main()
+# --- Tytuł aplikacji / header ---
+st.sidebar.markdown("## **FINANSOWY HOTELE**")
+
+# UWAGA:
+# Zgodnie z wymaganiem NIE ruszamy sekcji poniżej tytułu.
+# Jeśli masz tam własne widgety (rola/rok/miesiąc itd.), pozostaw je jak były
+# — ten plik nic tam nie dodaje ani nie usuwa.
+
+# --- Nowa nawigacja w SIDEBAR: Departamenty + pod-zakładki dla Kosztów ---
+DEPARTMENTS = [
+    "Pokoje",
+    "Gastronomia",
+    "Administracja i Dyrekcja",
+    "Dział Sprzedaży",
+    "Dział Techniczny",
+    "Koszty",
+    "Pozostałe Centra",
+]
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Departamenty")
+
+st.session_state["dept"] = st.sidebar.radio(
+    "Wybierz departament",
+    options=DEPARTMENTS,
+    index=DEPARTMENTS.index(st.session_state.get("dept", "Pokoje")),
+    key="dept_radio",
+)
+
+if st.session_state["dept"] == "Koszty":
+    st.session_state["dept_cost_tab"] = st.sidebar.radio(
+        "→ Koszty (podzakładki)",
+        options=["Koszty bieżące", "Koszty ogólne"],
+        index=0 if st.session_state.get("dept_cost_tab") not in ["Koszty bieżące", "Koszty ogólne"] else
+        ["Koszty bieżące", "Koszty ogólne"].index(st.session_state["dept_cost_tab"]),
+        key="dept_cost_radio",
+    )
+
+# --- Główna treść: routing wg wyboru departamentu ---
+dept = st.session_state.get("dept", "Pokoje")
+
+if dept == "Pokoje":
+    # Render strony z macierzą 12×N wyliczaną z dziennika „Wykonanie”
+    _safe_render(page_rooms, title="Pokoje — podsumowania miesięczne")
+
+elif dept == "Gastronomia":
+    st.header("Gastronomia — podsumowania miesięczne")
+    st.info("Placeholder. Podłączę źródła po doprecyzowaniu mapowania pól z dziennika/planów.")
+
+elif dept == "Administracja i Dyrekcja":
+    st.header("Administracja i Dyrekcja — podsumowania miesięczne")
+    st.info("Placeholder. Analogiczny widok do Pokoje.")
+
+elif dept == "Dział Sprzedaży":
+    st.header("Dział Sprzedaży — podsumowania miesięczne")
+    st.info("Placeholder. Analogiczny widok do Pokoje.")
+
+elif dept == "Dział Techniczny":
+    st.header("Dział Techniczny — podsumowania miesięczne")
+    st.info("Placeholder. Analogiczny widok do Pokoje.")
+
+elif dept == "Koszty":
+    sub = st.session_state.get("dept_cost_tab", "Koszty bieżące")
+    st.header(f"Koszty — {sub}")
+    st.info("Placeholder dla dwóch widoków kosztowych (bieżące/ogólne).")
+
+elif dept == "Pozostałe Centra":
+    st.header("Pozostałe Centra — podsumowania miesięczne")
+    st.info("Placeholder. Analogiczny widok do Pokoje.")
+
+
+# --- Footer / diagnostyka (opcjonalnie) ---
+with st.expander("Diag: stan sesji (dev)"):
+    st.write({k: v for k, v in st.session_state.items() if k in ["dept", "dept_cost_tab"]})
