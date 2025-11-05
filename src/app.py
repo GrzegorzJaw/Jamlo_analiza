@@ -61,7 +61,7 @@ def _safe_render(mod: Any, **kwargs) -> None:
 def _sidebar_context_and_nav() -> tuple[str, bool, int, int]:
     """
     Renderuje wyłącznie:
-      - tytuł 'Finansowy Hotele'
+      - tytuł 'Analiza hinansowa hotelu'
       - Rola / Rok / Miesiąc
     ŻADNEJ nawigacji (radio) nad/obok tytułu.
     """
