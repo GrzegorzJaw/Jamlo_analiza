@@ -184,4 +184,5 @@ def render() -> None:
             display.at[r, c] = _fmt(r, display.at[r, c])
     st.dataframe(display, use_container_width=True)
 
-render()
+if __name__ == "__main__":
+    render()
