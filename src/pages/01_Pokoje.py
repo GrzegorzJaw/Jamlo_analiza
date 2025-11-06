@@ -3,6 +3,15 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Próba importu get_month_df; jeśli brak – zwróć pusty DataFrame (fallback)
+# ──────────────────────────────────────────────────────────────────────────────
+try:
+    from core.state_local import get_month_df  # noqa: F401
+except Exception:
+    def get_month_df(year: int, month: int) -> pd.DataFrame:  # type: ignore
+        return pd.DataFrame()
+
 MONTHS = ["sty","lut","mar","kwi","maj","cze","lip","sie","wrz","paź","lis","gru"]
 
 ROWS = [
@@ -19,7 +28,7 @@ ROWS = [
 
     "— Koszty osobowe —",
     "Wynagrodzenie brutto i umowy zlecenia",
-    "ZUS", "PFRON", "Wyżywienie", "Odzież służbowa i bhp", "Usługi medyczne", "Inne",
+    "ZUS","PFRON","Wyżywienie","Odzież służbowa i bhp","Usługi medyczne","Inne",
 
     "— Zużycie materiałów —",
     "Materiały eksploatacyjne, Artykuły spożywcze",
@@ -40,18 +49,20 @@ ROWS = [
     "koszt na sprzedany pokój",
 ]
 
-# Nazwy kolumn w „Operacjach” (dziennik w sesji) – dopasuj, jeśli u Ciebie inne.
+# Mapowanie nazw kolumn w dzienniku „Operacje” (dopasuj, jeśli masz inne nagłówki)
 COL = {
     "date": "Data",
     "available": "Pokoje do sprzedaży",
     "oos": "Pokoje OOS",
     "sold_bez": "Sprzedane BEZ śn.",
     "sold_ze": "Sprzedane ZE śn.",
-    "revenue_rooms": "Przychody pokoje (netto)",          # używane tylko do RevPOR
-    "sales_sm": "Sprzedaż pokoi S&M (netto)",             # opcjonalnie
+    "revenue_rooms": "Przychody pokoje (netto)",     # do wyliczenia RevPOR
+    "sales_sm": "Sprzedaż pokoi S&M (netto)",        # opcjonalnie
 }
 
-# ----------------- Helpers -----------------
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
 def _n(x) -> pd.Series:
     """Zwróć Series[float] nawet dla scala/None/list."""
     if isinstance(x, pd.Series):
@@ -62,51 +73,69 @@ def _n(x) -> pd.Series:
         s = pd.Series([0.0])
     return pd.to_numeric(s, errors="coerce").fillna(0.0)
 
+def _detect_date_col(df: pd.DataFrame) -> str | None:
+    for c in ("Data", "data", "Date", "date"):
+        if c in df.columns:
+            return c
+    # heurystyka awaryjna
+    best, best_ok = None, -1
+    for c in df.columns:
+        try:
+            ok = pd.to_datetime(df[c], errors="coerce").notna().sum()
+            if ok > best_ok:
+                best, best_ok = c, ok
+        except Exception:
+            pass
+    return best
+
 def _month_from_exec(year: int, month: int) -> pd.DataFrame:
-    """Dziennik Operacje z sesji przefiltrowany do YYYY-MM, pusty gdy brak."""
+    """Fallback: weź dziennik 'Operacje' z session_state i wyfiltruj YYYY-MM."""
     exec_df = st.session_state.get("exec")
     if not isinstance(exec_df, pd.DataFrame) or exec_df.empty:
         return pd.DataFrame()
-    if COL["date"] not in exec_df.columns:
+    dcol = _detect_date_col(exec_df)
+    if not dcol:
         return pd.DataFrame()
     df = exec_df.copy()
-    df[COL["date"]] = pd.to_datetime(df[COL["date"]], errors="coerce")
-    return df[(df[COL["date"]].dt.year == year) & (df[COL["date"]].dt.month == month)]
+    df[dcol] = pd.to_datetime(df[dcol], errors="coerce")
+    return df[(df[dcol].dt.year == year) & (df[dcol].dt.month == month)]
 
+# ──────────────────────────────────────────────────────────────────────────────
+# KPI jednego miesiąca (zgodnie z „Podsumowania KPI”)
+# ──────────────────────────────────────────────────────────────────────────────
 def _kpi_month(df: pd.DataFrame) -> dict[str, float]:
-    """KPI jak w Podsumowaniach Operacji."""
     if df is None or df.empty:
         return dict(available=0.0, sold=0.0, occ=0.0, revpor=0.0, sm=0.0)
-
     av  = _n(df.get(COL["available"])).sum()
     oos = _n(df.get(COL["oos"])).sum()
-    capacity = max(av - oos, 0.0)
-
+    capacity = max(float(av - oos), 0.0)
     sold = (_n(df.get(COL["sold_bez"])) + _n(df.get(COL["sold_ze"]))).sum()
-
     revenue_rooms = _n(df.get(COL["revenue_rooms"])).sum()
-    revpor = (revenue_rooms / sold) if sold > 0 else 0.0
-    occ = (sold / capacity) if capacity > 0 else 0.0
-
+    revpor = float(revenue_rooms / sold) if sold > 0 else 0.0
+    occ = float(sold / capacity) if capacity > 0 else 0.0
     sm = _n(df.get(COL["sales_sm"])).sum() if COL.get("sales_sm") in df.columns else 0.0
-    return dict(available=capacity, sold=sold, occ=occ, revpor=revpor, sm=sm)
+    return dict(available=capacity, sold=float(sold), occ=occ, revpor=revpor, sm=float(sm))
 
-def _build_matrix(year: int, rooms_static: float) -> pd.DataFrame:
+# ──────────────────────────────────────────────────────────────────────────────
+# Budowa macierzy 12×N (get_month_df → fallback na dziennik z Operacji)
+# ──────────────────────────────────────────────────────────────────────────────
+def _build_rooms_matrix(year: int, rooms_static: float) -> pd.DataFrame:
     months: dict[int, dict[str, float]] = {}
     for m in range(1, 13):
-        df_m = _month_from_exec(year, m)
+        df_m = get_month_df(year, m)
+        if df_m is None or getattr(df_m, "empty", True):
+            df_m = _month_from_exec(year, m)
         months[m] = _kpi_month(df_m)
 
     mat = pd.DataFrame(0.0, index=ROWS, columns=MONTHS, dtype=float)
     for m in range(1, 13):
         col = MONTHS[m-1]
         k = months[m]
-        capacity = float(k["available"])
-        sold     = float(k["sold"])
-        occ      = float(k["occ"])
-        revpor   = float(k["revpor"])
-        sm       = float(k["sm"])
-
+        capacity = k["available"]
+        sold     = k["sold"]
+        occ      = k["occ"]
+        revpor   = k["revpor"]
+        sm       = k["sm"]
         sales_rooms = sold * revpor  # Twoja reguła
 
         mat.at["liczba pokoi", col]                 = rooms_static
@@ -117,9 +146,8 @@ def _build_matrix(year: int, rooms_static: float) -> pd.DataFrame:
 
         mat.at["Sprzedaż pokoi", col]               = sales_rooms
         mat.at["Sprzedaż pokoi S&M", col]           = sm
-        mat.at["Koszty wydziałowe", col]            = 0.0  # do podpięcia
+        mat.at["Koszty wydziałowe", col]            = 0.0  # placeholders do podpięcia
 
-        # placeholdery kosztów – podłączysz źródła później
         for r in [
             "Wynagrodzenie brutto i umowy zlecenia","ZUS","PFRON","Wyżywienie",
             "Odzież służbowa i bhp","Usługi medyczne","Inne",
@@ -140,6 +168,9 @@ def _build_matrix(year: int, rooms_static: float) -> pd.DataFrame:
             mat.loc[r, :] = None
     return mat
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Formatowanie do prezentacji
+# ──────────────────────────────────────────────────────────────────────────────
 def _fmt(row: str, v):
     if pd.isna(v) or row.startswith("—"):
         return ""
@@ -161,28 +192,36 @@ def _fmt(row: str, v):
         return f"{float(v):,.2f}".replace(",", " ").replace(".", ",")
     return f"{float(v):,.0f}".replace(",", " ")
 
-# ----------------- UI -----------------
+# ──────────────────────────────────────────────────────────────────────────────
+# UI
+# ──────────────────────────────────────────────────────────────────────────────
 def render() -> None:
-    # Czekaj na dziennik z Operacji
+    # Czekaj na dziennik z Operacji; bez tego nie liczymy KPI
     exec_df = st.session_state.get("exec")
     if not isinstance(exec_df, pd.DataFrame) or exec_df.empty:
         st.info("Brak danych w sesji. Wejdź najpierw do zakładki Operacje i zapisz miesiąc.")
         return
 
-    # Rok: bierz z sesji; jeśli brak – wywnioskuj z danych
-    year = int(st.session_state.get("year", 0)) or int(
-        pd.to_datetime(exec_df[COL["date"]], errors="coerce").dt.year.mode().iloc[0]
-    )
+    # Rok: z sesji lub heurystyka z dziennika
+    if "year" in st.session_state and st.session_state["year"]:
+        year = int(st.session_state["year"])
+    else:
+        dcol = _detect_date_col(exec_df)
+        if not dcol:
+            st.warning("Nie wykryto kolumny daty w dzienniku Operacje.")
+            return
+        year = int(pd.to_datetime(exec_df[dcol], errors="coerce").dt.year.mode().iloc[0])
 
     st.header(f"Departament POKOJE — {year}")
 
-    # Edytowalne: liczba pokoi (przechowywana per-rok)
+    # Edytowalna „liczba pokoi” (przechowywana per-rok)
     rooms_store = st.session_state.setdefault("rooms_static_by_year", {})
-    # Podpowiedź: max dostępnych pokoi w danym roku
+    # podpowiedź: max 'Pokoje do sprzedaży' w danym roku
     try:
+        dcol = _detect_date_col(exec_df)
         df_tmp = exec_df.copy()
-        df_tmp[COL["date"]] = pd.to_datetime(df_tmp[COL["date"]], errors="coerce")
-        default_guess = int(_n(df_tmp.loc[df_tmp[COL["date"]].dt.year == year, COL["available"]]).max())
+        df_tmp[dcol] = pd.to_datetime(df_tmp[dcol], errors="coerce")
+        default_guess = int(_n(df_tmp.loc[df_tmp[dcol].dt.year == year, COL["available"]]).max())
     except Exception:
         default_guess = 0
     current_value = int(rooms_store.get(year, default_guess))
@@ -191,11 +230,16 @@ def render() -> None:
         rooms_store[year] = int(new_value)
         st.session_state["rooms_static_by_year"] = rooms_store
 
-    matrix = _build_matrix(year, rooms_static=float(rooms_store.get(year, new_value)))
+    matrix = _build_rooms_matrix(year, rooms_static=float(rooms_store.get(year, new_value)))
 
     display = matrix.copy().astype(object)
     for r in display.index:
         for c in display.columns:
             display.at[r, c] = _fmt(r, display.at[r, c])
-
     st.dataframe(display, use_container_width=True)
+
+# W multipage Streamlit plik strony jest wykonywany po wejściu w zakładkę,
+# nie wywołujemy render() na siłę, aby nie kolidować z „Operacjami”.
+# Jeśli chcesz wymusić, odkomentuj poniższe dwie linie, ale zwykle NIE jest to potrzebne:
+# if __name__ == "__main__":
+#     render()
